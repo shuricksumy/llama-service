@@ -153,10 +153,12 @@ model files, e.g. before pushing config to the actual host).
 ## Prompt caching & llama-slot-proxy
 
 This server is tuned to sit behind
-[llama-slot-proxy](https://github.com/shuricksumy/llama-slot-proxy), which
-pins each caller (e.g. an n8n agent) to a fixed `id_slot` so its system
-prompt stays warm in that slot's KV-cache instead of being reprocessed on
-every call.
+[llama-slot-proxy](https://github.com/shuricksumy/llama-slot-proxy), a
+companion repo (same account) that pins each caller (e.g. an n8n agent) to
+a fixed `id_slot` so its system prompt stays warm in that slot's KV-cache
+instead of being reprocessed on every call. This repo provides the
+`llama-server` side of that pairing — the proxy repo's README documents the
+`--parallel`/`--ctx-size`/`--cache-reuse` flags it expects in return.
 
 For that to work, `llama.env` sets:
 
