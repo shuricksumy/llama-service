@@ -1,0 +1,40 @@
+[Unit]
+Description=Llama.cpp Vulkan Server
+After=network.target
+
+[Service]
+# Run as an unprivileged user. Defaults to UID/GID 1000 (systemd accepts a
+# numeric id here) -- the first regular user on most Debian/Ubuntu hosts.
+# Edit to your actual username/group if that doesn't match (see README.md's
+# "First-time setup" and "Vulkan / render group access").
+User=1000
+Group=1000
+
+# Set the working directory -- must match wherever you cloned this repo.
+WorkingDirectory=/opt/llama-service
+
+# Secrets not committed to git (e.g. LLAMA_API_KEY) -- copy
+# llama-server.env.example to llama-server.env and fill in real values.
+# Leading "-" means systemd won't fail to start if the file is missing.
+EnvironmentFile=-/opt/llama-service/llama-server.env
+
+# Resolves llama.env + the active preset and execs llama-server (stdlib
+# Python only, no venv needed -- see llama-tool.py --help)
+ExecStart=/opt/llama-service/llama-tool.py run
+
+# If the server crashes or the system reboots, restart it automatically
+Restart=always
+RestartSec=5
+
+# CRITICAL: Gives the service permission to lock memory for the --mlock flag
+LimitMEMLOCK=infinity
+
+# Cleanly route all terminal output into systemd's built-in log manager
+#StandardOutput=journal
+#StandardError=journal
+# Append standard output and errors directly to your log file
+StandardOutput=append:/opt/llama-service/llama-server.log
+StandardError=append:/opt/llama-service/llama-server.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+# Ignore standard log files
+*.log
+
+# Ignore logrotate backup files (e.g., .log.1, .log.2.gz)
+*.log.*
+
+llama-ui
+test.sh
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Vendored llama.cpp engine builds (fetched by llama-tool.py engine)
+vendor/
+
+# Downloaded GGUF models (fetched by llama-tool.py models)
+models/
+
+# Claude Code local session/permission state -- not shared project config,
+# and accumulates local machine paths over time.
+.claude/
+
+# Real secrets for systemd's EnvironmentFile= (see deploy/llama-server.env.example)
+deploy/llama-server.env
