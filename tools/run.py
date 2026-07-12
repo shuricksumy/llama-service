@@ -2,9 +2,9 @@
 
 Ported from run-llama.sh. Flag tables below mirror that script's ARGS
 builder exactly, including flags it deliberately leaves commented out
-(--mmproj, --n-cpu-moe, --tensor-split, --mlock) -- LLAMA_MMPROJ is still
-validated for existence even though it's never passed as a flag, matching
-the original's behavior.
+(--n-cpu-moe, --tensor-split, --mlock). --mmproj was one of those too but
+is now passed through (see ARG_SPEC) so multimodal/vision presets work;
+LLAMA_MMPROJ is validated for existence either way.
 """
 import os
 from pathlib import Path
@@ -17,6 +17,7 @@ from ._env import list_presets, resolve_env
 # prompt-cache/slot section (which itself interleaves value and bool flags).
 ARG_SPEC = [
     ("value", "LLAMA_MODEL", "--model"),
+    ("value", "LLAMA_MMPROJ", "--mmproj"),
     ("value", "LLAMA_HOST", "--host"),
     ("value", "LLAMA_PORT", "--port"),
     ("value", "LLAMA_API_KEY", "--api-key"),
