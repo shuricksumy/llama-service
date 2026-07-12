@@ -167,7 +167,7 @@ class CacheStatsTracker:
         print("-" * 66)
         if self.n_requests == 0:
             print('No completed requests found in log (no matching "prompt done"/"stop processing" lines).')
-            print("Make sure --verbosity is at least 3 (default) on the server.")
+            print("Make sure --verbosity is at least 4 on the server.")
             return
 
         overall = (
