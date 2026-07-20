@@ -191,6 +191,48 @@ Query it at `POST /v1/embeddings` (OpenAI-compatible) or `POST /embedding`.
 Run it alongside a chat preset with the multi-instance systemd template above,
 or manually in a second shell.
 
+#### Full example: rolling a new preset out to the server
+
+Once a preset like the one above exists in git (model weights themselves are
+gitignored — only `presets/*.env` and any `deploy/` changes are committed),
+here's the end-to-end sequence to bring it up on the actual host as its own
+service, alongside whatever's already running:
+
+```bash
+# 1. Pull the new preset (and any deploy/ changes) onto the server
+cd /opt/llama-service
+git pull
+
+# 2. Re-run init if deploy/llama-server.service or deploy/llama-server@.service
+#    changed (e.g. a new systemd directive) -- safe/idempotent to re-run
+#    even if they didn't
+./llama-tool.py init
+
+# 3. Download the model's weights (not in git) -- re-running the same
+#    `download` command is idempotent, it also rewrites the preset to match
+./llama-tool.py models download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding --port 18085 --preset qwen3-embedding-0.6b
+
+# 4. Sanity-check the resolved command before starting anything
+./llama-tool.py run qwen3-embedding-0.6b --dry-run
+
+# 5. Start it as its own auto-restarting service
+sudo systemctl enable --now llama-server@qwen3-embedding-0.6b
+systemctl status llama-server@qwen3-embedding-0.6b
+
+# 6. Verify it's actually serving
+curl -s http://localhost:18085/v1/embeddings \
+    -H "Content-Type: application/json" \
+    -d '{"input": "hello world"}' | head -c 300
+
+./llama-tool.py log llama-server-qwen3-embedding-0.6b.log --no-follow -n 50
+```
+
+If `deploy/llama-server@.service` picked up a new directive that needs
+cgroup v2 (e.g. `MemorySwapMax=0`), confirm the host has it before step 2:
+`cat /sys/fs/cgroup/cgroup.controllers` should exist and list controllers —
+if it doesn't, the unit will fail to start and that directive needs removing.
+
 ## Prompt caching & llama-slot-proxy
 
 This server is tuned to sit behind
