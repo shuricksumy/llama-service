@@ -95,7 +95,7 @@ def download_file(repo: str, filename: str, dest: Path, expected_sha: str, force
     print(f"Saved -> {dest.relative_to(REPO_ROOT)}")
 
 
-def write_preset(name, repo, file, file_sha, mmproj, mmproj_sha, port) -> Path:
+def write_preset(name, repo, file, file_sha, mmproj, mmproj_sha, port, embedding=False) -> Path:
     PRESETS_DIR.mkdir(parents=True, exist_ok=True)
     preset_file = PRESETS_DIR / f"{name}.env"
 
@@ -118,7 +118,21 @@ def write_preset(name, repo, file, file_sha, mmproj, mmproj_sha, port) -> Path:
     lines.append(': "${LLAMA_CTX_SIZE:=32768}"')
     lines.append(': "${LLAMA_N_GPU_LAYERS:=999999}"')
     lines.append(': "${LLAMA_OVERRIDE_KV:=}"')
-    lines.append(': "${LLAMA_REASONING:=off}"')
+    if embedding:
+        # --pooling last: Qwen3-Embedding (and most decoder-only embedding
+        # models) pool the final token's hidden state, not mean/cls.
+        # LLAMA_BATCH_SIZE/LLAMA_UBATCH_SIZE are plain (non-":=") assignments
+        # in llama.env, sourced before this preset, so a ":=" here would be a
+        # silent no-op -- these must be plain assignments to actually win.
+        # Raised together (ubatch <= batch) so a whole document embeds in one
+        # pass instead of being split (see model card's example invocation).
+        # No LLAMA_REASONING -- that flag is chat-template-only.
+        lines.append(': "${LLAMA_EMBEDDING:=true}"')
+        lines.append(': "${LLAMA_POOLING:=last}"')
+        lines.append('LLAMA_BATCH_SIZE="8192"')
+        lines.append('LLAMA_UBATCH_SIZE="8192"')
+    else:
+        lines.append(': "${LLAMA_REASONING:=off}"')
 
     preset_file.write_text("\n".join(lines) + "\n")
     print(f"Wrote {preset_file.relative_to(REPO_ROOT)}")
@@ -149,7 +163,7 @@ def cmd_download(args):
         download_file(repo, mmproj, dest_dir / mmproj, mmproj_sha, args.force)
 
     preset_name = args.preset or slugify(file[:-5] if file.endswith(".gguf") else file)
-    write_preset(preset_name, repo, file, model_sha, mmproj, mmproj_sha, args.port)
+    write_preset(preset_name, repo, file, model_sha, mmproj, mmproj_sha, args.port, embedding=args.embedding)
 
     print()
     print(f"Done. Try:  ./llama-tool.py run {preset_name} --dry-run")
@@ -279,6 +293,10 @@ def add_arguments(parser):
     p_dl.add_argument("--preset", default="", help="Preset file name (default: derived from <file>)")
     p_dl.add_argument("--port", default="18080", help="LLAMA_PORT for the generated preset")
     p_dl.add_argument("--force", action="store_true", help="Re-download even if the file already exists")
+    p_dl.add_argument(
+        "--embedding", action="store_true",
+        help="Generate an embedding-server preset (--embedding, --pooling last, larger --ubatch-size) instead of a chat preset",
+    )
 
     p_del = sub.add_parser("delete", help="Delete a preset and its model file(s)")
     p_del.add_argument("preset")

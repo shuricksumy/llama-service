@@ -1,4 +1,4 @@
-/opt/llama-service/llama-server.log {
+/opt/llama-service/llama-server.log /opt/llama-service/llama-server-*.log {
     # Add "su <user> <group>" here if logrotate doesn't run as root on your
     # host and can't otherwise read/write this file.
     weekly

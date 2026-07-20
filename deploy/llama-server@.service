@@ -1,0 +1,48 @@
+[Unit]
+Description=Llama.cpp Vulkan Server (%i)
+After=network.target
+
+[Service]
+# Run as an unprivileged user. Defaults to UID/GID 1000 (systemd accepts a
+# numeric id here) -- the first regular user on most Debian/Ubuntu hosts.
+# Edit to your actual username/group if that doesn't match (see README.md's
+# "First-time setup" and "Vulkan / render group access").
+User=1000
+Group=1000
+
+# Set the working directory -- must match wherever you cloned this repo.
+WorkingDirectory=/opt/llama-service
+
+# Secrets not committed to git (e.g. LLAMA_API_KEY) -- copy
+# llama-server.env.example to llama-server.env and fill in real values.
+# Leading "-" means systemd won't fail to start if the file is missing.
+EnvironmentFile=-/opt/llama-service/llama-server.env
+
+# Template unit: "%i" is the instance name, e.g. `systemctl enable --now
+# llama-server@qwen3-embedding-0.6b` runs preset "qwen3-embedding-0.6b".
+# Lets several presets run side by side as independently managed services
+# (each preset already has its own LLAMA_PORT), unlike llama-server.service
+# below which always runs $ACTIVE_PRESET alone.
+ExecStart=/opt/llama-service/llama-tool.py run %i
+
+# If the server crashes or the system reboots, restart it automatically
+Restart=always
+RestartSec=5
+
+# CRITICAL: Gives the service permission to lock memory for the --mlock flag
+LimitMEMLOCK=infinity
+
+# Disallow swap for this instance's cgroup entirely (requires cgroup v2), on
+# top of --mlock -- belt-and-suspenders against the model/KV-cache getting
+# paged out and stalling inference. Applies per-instance, so it doesn't
+# starve swap for other llama-server@ instances running alongside this one.
+MemorySwapMax=0
+
+# One log file per instance so concurrent presets' output doesn't interleave
+# (`llama-tool.py log`/`cache stats` take a path, so pass this one directly,
+# e.g. `llama-tool.py log llama-server-qwen3-embedding-0.6b.log`).
+StandardOutput=append:/opt/llama-service/llama-server-%i.log
+StandardError=append:/opt/llama-service/llama-server-%i.log
+
+[Install]
+WantedBy=multi-user.target

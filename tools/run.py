@@ -35,6 +35,11 @@ ARG_SPEC = [
     ("value", "LLAMA_FLASH_ATTN", "--flash-attn"),
     ("value", "LLAMA_OVERRIDE_KV", "--override-kv"),
     ("value", "LLAMA_REASONING", "--reasoning"),
+    # Embedding-model support (not part of run-llama.sh's original ARG_SPEC --
+    # both are no-ops for normal chat presets since neither var is set unless
+    # a preset opts in, e.g. via `models download --embedding`).
+    ("bool", "LLAMA_EMBEDDING", "--embedding"),
+    ("value", "LLAMA_POOLING", "--pooling"),
     ("bool", "LLAMA_NO_WEBUI", "--no-webui"),
     ("bool", "LLAMA_JINJA", "--jinja"),
     ("bool", "LLAMA_LOG_DISABLE", "--log-disable"),

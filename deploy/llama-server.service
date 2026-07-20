@@ -29,6 +29,11 @@ RestartSec=5
 # CRITICAL: Gives the service permission to lock memory for the --mlock flag
 LimitMEMLOCK=infinity
 
+# Disallow swap for this service's cgroup entirely (requires cgroup v2), on
+# top of --mlock -- belt-and-suspenders against the model/KV-cache getting
+# paged out and stalling inference.
+MemorySwapMax=0
+
 # Cleanly route all terminal output into systemd's built-in log manager
 #StandardOutput=journal
 #StandardError=journal

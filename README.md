@@ -21,7 +21,8 @@ After cloning this repo onto a host:
 cp deploy/llama-server.env.example deploy/llama-server.env
 $EDITOR deploy/llama-server.env             # set LLAMA_API_KEY (gitignored, never committed)
 $EDITOR deploy/llama-server.service         # set User=/Group=/WorkingDirectory= for your host (see below)
-./llama-tool.py init                        # installs the systemd unit + logrotate config, enables on boot
+$EDITOR deploy/llama-server@.service        # same edits, for the multi-instance template (see below)
+./llama-tool.py init                        # installs the systemd units + logrotate config, enables on boot
 ./llama-tool.py engine install              # fetches llama-server into vendor/llama.cpp/
 ./llama-tool.py models download <org>/<repo> <file.gguf>   # fetches a model, generates a preset
 sudo systemctl start llama-server
@@ -32,15 +33,17 @@ sudo systemctl start llama-server
 numeric id here) and `WorkingDirectory=/opt/llama-service`. Edit both to
 match your actual user and wherever you cloned this repo *before* running
 `init`, since it copies the file as-is into `/etc/systemd/system/`.
-`deploy/llama-server.logrotate` has the same working-directory path and
-needs the same edit if you didn't clone to `/opt/llama-service`.
+`deploy/llama-server@.service` (see "Running several models at once") and
+`deploy/llama-server.logrotate` have the same working-directory path and
+need the same edit if you didn't clone to `/opt/llama-service`.
 
-`init` copies `deploy/llama-server.service` and `deploy/llama-server.logrotate`
-into `/etc/` via `sudo` and runs `systemctl daemon-reload` + `enable` — see
-"Installing the systemd service" below for exactly what it does and how to
-do it by hand instead. It shows every command before running it and asks
+`init` copies `deploy/llama-server.service`, `deploy/llama-server@.service`,
+and `deploy/llama-server.logrotate` into `/etc/` via `sudo` and runs
+`systemctl daemon-reload` + `enable` (for `llama-server.service` only —
+see "Installing the systemd service" below for exactly what it does and how
+to do it by hand instead). It shows every command before running it and asks
 for confirmation (`-y` to skip, `--dry-run` to preview, `--no-enable` to
-skip the boot-enable step). It does not start the service or touch
+skip the boot-enable step). It does not start any service or touch
 user/group membership — see "Vulkan / render group access" for that.
 
 ### Secrets
@@ -150,6 +153,44 @@ with a clear error if something's missing (`--dry-run` downgrades these to
 warnings so you can preview a command from a machine that doesn't have the
 model files, e.g. before pushing config to the actual host).
 
+### Running several models at once
+
+Any preset can already be run standalone (`./llama-tool.py run <preset> &`
+in a second shell, or two separate terminals) as long as its `LLAMA_PORT`
+doesn't collide with another running instance's. To have systemd manage
+several presets as independent, auto-restarting services instead of one
+`ACTIVE_PRESET`, use the `llama-server@.service` template installed by
+`init` (see "Installing the systemd service"):
+
+```bash
+sudo systemctl enable --now llama-server@qwen3.5-9b
+sudo systemctl enable --now llama-server@qwen3-embedding-0.6b
+systemctl status 'llama-server@*'
+```
+
+Each instance gets its own log at `llama-server-<preset>.log`; pass that
+path explicitly to `llama-tool.py log`/`cache stats` since `LLAMA_LOG_FILE`
+only covers the plain `llama-server.service` / `ACTIVE_PRESET` path.
+
+### Embedding models
+
+`models download --embedding` generates a preset for an embedding-only
+model instead of a chat model: it adds `--embedding`, `--pooling last`
+(the pooling most decoder-only embedding models, including Qwen3-Embedding,
+expect), and raises `LLAMA_BATCH_SIZE`/`LLAMA_UBATCH_SIZE` to 8192 so a
+whole document is embedded in one pass instead of being split.
+
+```bash
+./llama-tool.py models list-files Qwen/Qwen3-Embedding-0.6B-GGUF
+./llama-tool.py models download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding --port 18085 --preset qwen3-embedding-0.6b
+./llama-tool.py run qwen3-embedding-0.6b --dry-run
+```
+
+Query it at `POST /v1/embeddings` (OpenAI-compatible) or `POST /embedding`.
+Run it alongside a chat preset with the multi-instance systemd template above,
+or manually in a second shell.
+
 ## Prompt caching & llama-slot-proxy
 
 This server is tuned to sit behind
@@ -222,6 +263,7 @@ By hand:
 
 ```bash
 cp ./deploy/llama-server.service  /etc/systemd/system/llama-server.service
+cp ./deploy/llama-server@.service /etc/systemd/system/llama-server@.service
 sudo systemctl daemon-reload
 sudo systemctl enable llama-server
 sudo systemctl start llama-server
@@ -232,9 +274,13 @@ The unit's `EnvironmentFile=-/opt/llama-service/llama-server.env` loads
 secrets (see "Secrets" above) — that file isn't created by `init`, copy it
 from `deploy/llama-server.env.example` yourself first.
 
-The service always runs `llama-tool.py run` with no arguments, so it uses
-`ACTIVE_PRESET` from `llama.env` — set that to whichever preset should run on
-boot/restart.
+`llama-server.service` always runs `llama-tool.py run` with no arguments, so
+it uses `ACTIVE_PRESET` from `llama.env` — set that to whichever preset
+should run on boot/restart. `llama-server@.service` is a template instead:
+`systemctl enable --now llama-server@<preset>` runs that specific preset as
+its own service (`llama-tool.py run <preset>`), so several can run side by
+side — see "Running several models at once" above. It isn't enabled by
+`init` for any specific preset since that's a per-instance choice.
 
 ## logrotate
 
@@ -244,6 +290,10 @@ Also handled by `./llama-tool.py init`. By hand:
 cp ./deploy/llama-server.logrotate /etc/logrotate.d/llama-server
 sudo logrotate -vf /etc/logrotate.d/llama-server
 ```
+
+Covers both `llama-server.log` (the single-instance/`ACTIVE_PRESET` service)
+and `llama-server-*.log` (per-preset logs from the `llama-server@.service`
+template).
 
 ## Vulkan / render group access
 
