@@ -404,6 +404,35 @@ sudo systemctl enable --now mem-report
 systemctl status mem-report
 ```
 
+## Debugging / status
+
+Quick reference for checking what's actually running on the host, across
+all the systemd units this repo installs.
+
+```bash
+systemctl list-units 'llama-server*' --all       # every llama-server unit + state, running or not
+systemctl status 'llama-server@*'                # just the active @-instances, with preset name in each block
+systemctl status llama-server                    # the single ACTIVE_PRESET instance
+systemctl status mem-report                       # the memory/GPU report server, if installed
+
+systemctl list-timers 'llama-server-restart*'    # next/last fire time per preset's restart timer
+journalctl -u llama-server-restart.service --since -7d               # did the ACTIVE_PRESET restart actually run?
+journalctl -u llama-server-restart@<preset>.service --since -7d      # same, per-instance
+
+./llama-tool.py log --no-follow -n 100                                # tail LLAMA_LOG_FILE (ACTIVE_PRESET)
+./llama-tool.py log llama-server-<preset>.log --no-follow -n 100      # tail a specific @-instance's log
+journalctl -u llama-server -f                                          # or via journald, if StandardOutput=journal
+```
+
+A `llama-server-restart[@].service` showing `loaded inactive dead` in
+`list-units` is expected, not a problem — it's a `Type=oneshot` unit that
+only runs momentarily when its `.timer` fires, then goes back to `dead`
+until the next scheduled restart. The `.timer` itself should show `active
+waiting`; that's what confirms the schedule is armed.
+
+For live memory/GPU/swap numbers instead of systemd state, see "Memory /
+GPU report" above.
+
 ## Vulkan / render group access
 
 ```bash
