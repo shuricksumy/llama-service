@@ -363,6 +363,12 @@ sudo systemctl enable --now llama-server-restart@<preset>.timer      # for llama
 systemctl list-timers 'llama-server-restart*'                        # confirm schedule
 ```
 
+`llama-tool.py services enable <preset> --now` (see "Debugging / status"
+below) does this pairing for you automatically whenever you enable a
+preset as a service, so you normally don't need the commands above by
+hand — they're here for reference/by-hand setups, or hosts that predate
+that pairing.
+
 Each timer triggers a oneshot `systemctl try-restart` — a no-op if that
 service isn't currently running, so it's safe to leave enabled even while
 a service is stopped for maintenance. `Restart=always` on the underlying
@@ -416,62 +422,82 @@ systemctl status llama-mem-report
 
 ## Debugging / status
 
-`llama-tool.py services` is the easiest way to see what's running, restart
-it, or bring a preset up/down as a service, without having to remember unit
-names or glob patterns. It covers every systemd unit this repo installs —
-`llama-server[@]`, the `llama-server-restart[@]` timers, and
-`llama-mem-report` — grouped under one numbered list:
+`llama-tool.py services` is the one place to see and manage every preset's
+systemd lifecycle — no need to remember unit names or glob patterns. `list`
+shows **every preset under `presets/*.env`, running or not** (not just
+what's already loaded), plus the main `ACTIVE_PRESET` slot, any periodic
+restart timers, and `llama-mem-report`, all under one numbered list:
 
 ```bash
 ./llama-tool.py services list
 # llama-server:
-#   1) llama-server.service                       active running   Llama.cpp Vulkan Server
-#   2) llama-server@qwen3-embedding-0.6b.service   active running   Llama.cpp Vulkan Server (qwen3-embedding-0.6b)
+#   1) llama-server [ACTIVE_PRESET=qwen3.5-9b]  active running   [restart timer: armed]
+#   2) gemma-4b-e4b                             not running      [restart timer: off]
+#   3) qwen3-embedding-0.6b                     active running   [restart timer: off]
+#   4) qwen3.5-9b                               not running      [restart timer: off]
+#   ...
 #
 # Periodic restart timers:
-#   3) llama-server-restart.timer                  active waiting   Daily restart timer for llama-server
+#   9) llama-server-restart.timer                active waiting
 #
 # Memory / GPU report:
-#   4) llama-mem-report.service                    active running   Memory / GPU / Swap Report HTTP Server
+#   10) llama-mem-report.service                 active running
 ```
+
+Bring a preset up or down as a service — `start`/`stop` act now only (not
+persisted across reboot), `enable`/`disable` change whether it comes back
+on the next boot (`--now` to also act immediately). These work even for a
+preset that's **never been started before** — this is how you turn a new
+`presets/<name>.env` into a running `llama-server@<name>.service` for the
+first time, or take one out of service entirely:
+
+```bash
+./llama-tool.py services enable gemma-4b-e4b --now      # run it now AND on every future boot
+./llama-tool.py services start gemma-4b-e4b               # run it now only, this boot
+./llama-tool.py services disable gemma-4b-e4b --now      # stop it now and remove from boot
+./llama-tool.py services stop gemma-4b-e4b                # stop it now, leaves boot-enable state alone
+```
+
+You can target by the number `list` just printed instead of typing the
+preset name, and `llama-server`/`llama-mem-report` are recognized directly
+too (`services enable llama-mem-report --now`).
+
+Check whether it actually came up cleanly (this is just `systemctl status`
+under the hood, so it's read-only — no sudo, no confirmation prompt):
+
+```bash
+./llama-tool.py services status 2               # by number from `list`
+./llama-tool.py services status gemma-4b-e4b     # or by preset name
+./llama-tool.py services status 2 gemma-4b-e4b   # check several at once
+./llama-tool.py services status 2 -n 50          # show more log lines
+```
+
+**`enable`/`disable` also arm/disarm the preset's periodic restart timer**
+(`llama-server-restart[@<preset>].timer`) in the same call — enabling a
+preset for the long haul means its daily memory-clearing restart should be
+running too, and disabling it means that restart shouldn't linger pointed
+at a service that's no longer up. Pass `--no-restart-timer` to manage the
+timer separately instead. `start`/`stop` deliberately don't do this pairing
+— they're one-off actions, not a change to what persists across reboots.
 
 Restart one, several, or (default) every currently-running `llama-server`
 instance:
 
 ```bash
-./llama-tool.py services restart              # restart every loaded llama-server/llama-server@* instance
-./llama-tool.py services restart 2            # restart just #2 from the list above
-./llama-tool.py services restart 2 4          # restart #2 and #4 (works on timers/mem-report too, by number)
+./llama-tool.py services restart              # restart every currently-running llama-server/llama-server@* instance
+./llama-tool.py services restart 3            # restart just #3 from the list above
+./llama-tool.py services restart 3 9          # restart #3 and #9 (works on timers/mem-report too, by number)
 ./llama-tool.py services restart qwen3.5-9b   # or by preset/unit name instead of number
 ./llama-tool.py services restart -y           # skip the confirmation prompt
 ./llama-tool.py services restart --dry-run    # preview the systemctl command without running it
 ```
 
-Bring a preset up or down as a service — `start`/`stop` are one-off (not
-persisted across reboot), `enable`/`disable` (with `--now` to also
-act immediately) control whether it comes back on the next boot:
-
-```bash
-./llama-tool.py services start qwen3.5-9b-sushi-coder            # run it now, this boot only
-./llama-tool.py services enable qwen3.5-9b-sushi-coder --now     # run it now AND on every future boot
-./llama-tool.py services stop qwen3.5-9b-sushi-coder              # stop it now, leaves boot-enable state alone
-./llama-tool.py services disable qwen3.5-9b-sushi-coder --now     # stop it now and remove from boot
-```
-
-Unlike `list`/`restart`, these work even for a preset that's never been
-started before — that's how you turn a new `presets/<name>.env` into a
-running `llama-server@<name>.service` for the first time (no need to
-remember the `llama-server@<preset>.service` unit name; the bare preset
-name resolves automatically). `llama-server`/`llama-mem-report` are
-recognized directly too (`services enable llama-mem-report --now`).
-
-`restart`'s numbers are positional, re-derived fresh from
-`systemctl list-units` on every invocation — safe to `list` and then
-`restart <n>` as two separate commands as long as nothing else
-starts/stops a unit in between. With no selector, `restart` only touches
-`llama-server`/`llama-server@*` (not the timers or mem-report, which
-restarting doesn't meaningfully do as a group default) — target those
-explicitly by number or name if you want to restart just one of them.
+Numbers are positional, re-derived fresh from `systemctl list-units` (plus
+`presets/*.env`) on every invocation — safe to `list` and then act on `<n>`
+as two separate commands as long as no preset is added/removed and nothing
+else starts/stops a unit in between. With no selector, `restart` only
+touches instances that are *currently running* (not stopped presets, timers,
+or mem-report) — target those explicitly by number or name.
 
 For the raw `systemctl`/`journalctl` commands `services` wraps (useful if
 you want more detail than the numbered list gives you):

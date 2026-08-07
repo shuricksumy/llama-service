@@ -1,23 +1,33 @@
-"""llama-tool.py services -- list/start/stop/enable/disable/restart the
-systemd units this repo installs: `llama-server.service` (the ACTIVE_PRESET
-instance), any `llama-server@<preset>.service` instances, the
-`llama-server-restart[@]` periodic-restart timer/oneshot pairs, and
-`llama-mem-report.service`.
+"""llama-tool.py services -- single place to see and manage every preset's
+systemd lifecycle: `llama-server.service` (the ACTIVE_PRESET instance),
+`llama-server@<preset>.service` for each preset under `presets/*.env`
+(whether or not it's currently running), the paired `llama-server-restart[@]`
+periodic-restart timers, and `llama-mem-report.service`.
 
-`list` needs no privileges; every other subcommand shells out to
-`sudo systemctl <verb>`. `start`/`stop`/`enable`/`disable` take a single
-target (preset name, `llama-server`/`llama-mem-report`, or a full unit name)
-and work even if that unit has never been loaded yet -- that's how you bring
-up a *new* preset as a service. `restart` instead works off the numbered
-`list` output (by number, unit name, or preset name) since it only makes
-sense for units that are already loaded; with no selector it restarts every
-loaded `llama-server`/`llama-server@*` instance (not the timers or
-mem-report, which restarting doesn't meaningfully do anything for as a
-group default).
+`list`/`status` need no privileges; every other subcommand shells out to
+`sudo systemctl <verb>`. `start`/`stop`/`enable`/`disable`/`status` take
+target(s) -- a number from the last `list`, a preset name (-> `llama-server@
+<preset>.service`), `llama-server`/`llama-mem-report`, or a full unit name --
+and (except `status`) work even if that unit has never been loaded yet,
+which is how a brand new preset gets turned into a running service for the
+first time.
+
+`enable`/`disable` additionally bring the preset's `llama-server-restart[@]`
+*timer* along for the ride (enabling a preset also arms its daily restart;
+disabling it disarms that restart too) -- pass `--no-restart-timer` to
+manage the timer separately instead. `start`/`stop` are deliberately not
+paired this way: they're one-off actions, not a change to what should
+persist across reboots.
+
+`restart` works off the same catalog `list` prints (by number, unit name,
+or preset name); with no selector it restarts every *currently running*
+llama-server/llama-server@* instance (not timers or mem-report -- select
+those explicitly by number/name if that's what you want restarted).
 """
 import subprocess
 
-from ._common import die
+from ._common import die, warn
+from ._env import list_presets, resolve_env
 
 CORE_PATTERNS = ["llama-server.service", "llama-server@*.service"]
 TIMER_PATTERNS = [
@@ -33,15 +43,9 @@ SPECIAL_UNITS = {
 }
 
 
-def _category(unit):
-    if unit.startswith("llama-server-restart"):
-        return 1
-    if unit.startswith("llama-mem-report"):
-        return 2
-    return 0  # llama-server.service / llama-server@*.service
-
-
-def _list_units(patterns):
+def _systemctl_loaded(patterns):
+    """{unit_name: {active, sub, desc}} for every unit matching `patterns`
+    that systemd currently knows about (started/enabled at least once)."""
     cmd = [
         "systemctl", "list-units", "--all", "--type=service", "--type=timer",
         "--no-legend", "--plain", "--no-pager", *patterns,
@@ -54,44 +58,96 @@ def _list_units(patterns):
     if result.returncode != 0 and not result.stdout.strip():
         die(f"systemctl list-units failed: {result.stderr.strip()}")
 
-    units = []
+    loaded = {}
     for line in result.stdout.splitlines():
         parts = line.split(None, 4)
         if len(parts) < 4:
             continue
-        unit, load, active, sub = parts[:4]
+        unit, _load, active, sub = parts[:4]
         desc = parts[4] if len(parts) > 4 else ""
-        units.append({"unit": unit, "load": load, "active": active, "sub": sub, "desc": desc})
-    units.sort(key=lambda u: (_category(u["unit"]), u["unit"]))
-    return units
+        loaded[unit] = {"active": active, "sub": sub, "desc": desc}
+    return loaded
 
 
-def _print_units(units):
-    if not units:
-        print("No llama-server/llama-mem-report units are loaded on this host.")
-        print("(A unit only shows up here once it's been started/enabled at least once this boot --")
-        print(" use `services start <preset>` or `services enable <preset> --now` to bring one up.)")
-        return
+def _paired_timer(unit):
+    """llama-server.service -> llama-server-restart.timer;
+    llama-server@<preset>.service -> llama-server-restart@<preset>.timer;
+    anything else (mem-report, a timer itself, ...) -> None.
+    """
+    if unit == "llama-server.service":
+        return "llama-server-restart.timer"
+    prefix, suffix = "llama-server@", ".service"
+    if unit.startswith(prefix) and unit.endswith(suffix):
+        preset = unit[len(prefix):-len(suffix)]
+        return f"llama-server-restart@{preset}.timer"
+    return None
 
-    width = max(len(u["unit"]) for u in units)
+
+def _build_catalog():
+    """Ordered list of every unit this repo cares about, whether or not
+    it's currently loaded: the main ACTIVE_PRESET slot, one row per preset
+    in presets/*.env, then loaded restart timers, then a loaded mem-report.
+    Each entry: unit, label, category (0=llama-server, 1=timer, 2=report),
+    loaded, active, sub, timer_note (category 0 only).
+    """
+    loaded = _systemctl_loaded(ALL_PATTERNS)
+    catalog = []
+
+    def add(unit, label, category):
+        lu = loaded.get(unit)
+        entry = {
+            "unit": unit, "label": label, "category": category,
+            "loaded": lu is not None,
+            "active": lu["active"] if lu else "",
+            "sub": lu["sub"] if lu else "",
+            "timer_note": "",
+        }
+        if category == 0:
+            paired = _paired_timer(unit)
+            tu = loaded.get(paired) if paired else None
+            entry["timer_note"] = "restart timer: armed" if (tu and tu["active"] == "active") else "restart timer: off"
+        catalog.append(entry)
+
+    active_preset = resolve_env(None).get("ACTIVE_PRESET", "")
+    add("llama-server.service", f"llama-server [ACTIVE_PRESET={active_preset or '?'}]", 0)
+
+    for name, _desc in list_presets():
+        add(f"llama-server@{name}.service", name, 0)
+
+    for unit in sorted(u for u in loaded if u.startswith("llama-server-restart")):
+        add(unit, unit, 1)
+
+    for unit in sorted(u for u in loaded if u.startswith("llama-mem-report")):
+        add(unit, unit, 2)
+
+    return catalog
+
+
+def _print_catalog(catalog):
+    width = max((len(e["label"]) for e in catalog), default=0)
     sections = [
-        ("llama-server", [u for u in units if _category(u["unit"]) == 0]),
-        ("Periodic restart timers", [u for u in units if _category(u["unit"]) == 1]),
-        ("Memory / GPU report", [u for u in units if _category(u["unit"]) == 2]),
+        ("llama-server", [e for e in catalog if e["category"] == 0]),
+        ("Periodic restart timers", [e for e in catalog if e["category"] == 1]),
+        ("Memory / GPU report", [e for e in catalog if e["category"] == 2]),
     ]
     i = 1
     first = True
-    for label, section_units in sections:
-        if not section_units:
+    for title, entries in sections:
+        if not entries:
             continue
         if not first:
             print()
         first = False
-        print(f"{label}:")
-        for u in section_units:
-            state = f"{u['active']} {u['sub']}"
-            print(f"  {i}) {u['unit']:<{width}}  {state:<16} {u['desc']}")
+        print(f"{title}:")
+        for e in entries:
+            state = f"{e['active']} {e['sub']}" if e["loaded"] else "not running"
+            extra = f"  [{e['timer_note']}]" if e["timer_note"] else ""
+            print(f"  {i}) {e['label']:<{width}}  {state:<15}{extra}")
             i += 1
+    if not any(e["loaded"] for e in catalog):
+        print()
+        print("Nothing above is running yet -- `services start <preset>` or")
+        print("`services enable <preset> --now` to bring one up.")
 
 
 def _resolve_target(name):
@@ -109,68 +165,86 @@ def _resolve_target(name):
     return f"llama-server@{name}.service"
 
 
-def _resolve_selection(units, selectors):
+def _resolve_single(catalog, selector):
+    if selector.isdigit():
+        idx = int(selector)
+        if 1 <= idx <= len(catalog):
+            return catalog[idx - 1]["unit"]
+        die(f"no unit at position {idx} -- run `llama-tool.py services list` to see valid numbers")
+    for e in catalog:
+        if e["unit"] == selector:
+            return e["unit"]
+    return _resolve_target(selector)
+
+
+def _resolve_multi(catalog, selectors):
     if not selectors:
-        return units
-
-    by_index = {str(i): u for i, u in enumerate(units, 1)}
-    by_name = {u["unit"]: u for u in units}
-
-    chosen, seen = [], set()
+        return [e["unit"] for e in catalog]
+    units, seen = [], set()
     for sel in selectors:
-        u = by_index.get(sel) or by_name.get(sel) or by_name.get(_resolve_target(sel))
-        if u is None:
-            die(f"no unit matches '{sel}' -- run `llama-tool.py services list` to see valid numbers/names")
-        if u["unit"] not in seen:
-            chosen.append(u)
-            seen.add(u["unit"])
-    return chosen
+        u = _resolve_single(catalog, sel)
+        if u not in seen:
+            units.append(u)
+            seen.add(u)
+    return units
 
 
 def _run(cmd, dry_run):
     print("+ " + " ".join(cmd))
     if dry_run:
-        return
+        return True
     result = subprocess.run(cmd)
     if result.returncode != 0:
         die(f"command failed: {' '.join(cmd)}")
+    return True
 
 
-def _confirm_and_run(cmd, verb, unit, dry_run, yes):
-    print(f"This will use sudo to {verb}:")
-    print(f"  {unit}")
-    print()
-    if not dry_run and not yes:
-        reply = input("Proceed? [y/N] ")
-        if reply.strip().lower() != "y":
-            print("Aborted.")
-            return
-    _run(cmd, dry_run)
-    print("Dry-run complete, nothing changed." if dry_run else "Done.")
+def _run_soft(cmd, dry_run):
+    """Like _run but reports failure instead of dying -- used for the
+    paired restart-timer step so a timer hiccup doesn't undo the primary
+    (already-succeeded) enable/disable of the preset itself."""
+    print("+ " + " ".join(cmd))
+    if dry_run:
+        return True
+    result = subprocess.run(cmd)
+    return result.returncode == 0
 
 
 def cmd_list(args):
-    _print_units(_list_units(ALL_PATTERNS))
+    _print_catalog(_build_catalog())
+
+
+def cmd_status(args):
+    units = _resolve_multi(_build_catalog(), args.selector)
+    cmd = ["systemctl", "status", *units]
+    if args.lines is not None:
+        cmd += ["-n", str(args.lines)]
+    try:
+        result = subprocess.run(cmd)
+    except FileNotFoundError:
+        die("systemctl not found -- this command only works on a systemd host")
+    # systemctl status exits non-zero for a stopped/failed unit by design --
+    # that's informative output, not a tool failure, so just propagate its
+    # exit code instead of treating it as an error via die().
+    raise SystemExit(result.returncode)
 
 
 def cmd_restart(args):
-    units = _list_units(ALL_PATTERNS)
+    catalog = _build_catalog()
     if args.selector:
-        if not units:
-            die("no matching units are loaded on this host -- nothing to restart")
-        targets = _resolve_selection(units, args.selector)
+        targets = _resolve_multi(catalog, args.selector)
     else:
-        targets = [u for u in units if _category(u["unit"]) == 0]
+        targets = [e["unit"] for e in catalog if e["category"] == 0 and e["loaded"] and e["active"] == "active"]
         if not targets:
             die(
-                "no llama-server.service/llama-server@* units are loaded -- nothing to restart.\n"
+                "no llama-server.service/llama-server@* instances are currently running -- nothing to restart.\n"
                 "Pass a number/name from `services list` to restart a specific unit (e.g. a timer or "
                 "llama-mem-report), or `services start <preset>` to bring up a new one."
             )
 
     print("This will use sudo to restart:")
     for u in targets:
-        print(f"  {u['unit']}")
+        print(f"  {u}")
     print()
 
     if not args.dry_run and not args.yes:
@@ -179,37 +253,82 @@ def cmd_restart(args):
             print("Aborted.")
             return
 
-    _run(["sudo", "systemctl", "restart", *(u["unit"] for u in targets)], args.dry_run)
+    _run(["sudo", "systemctl", "restart", *targets], args.dry_run)
     print("Dry-run complete, nothing changed." if args.dry_run else "Done.")
 
 
 def cmd_start(args):
-    unit = _resolve_target(args.target)
-    _confirm_and_run(["sudo", "systemctl", "start", unit], "start", unit, args.dry_run, args.yes)
+    unit = _resolve_single(_build_catalog(), args.target)
+    print("This will use sudo to start:")
+    print(f"  {unit}")
+    print()
+    if not args.dry_run and not args.yes:
+        reply = input("Proceed? [y/N] ")
+        if reply.strip().lower() != "y":
+            print("Aborted.")
+            return
+    _run(["sudo", "systemctl", "start", unit], args.dry_run)
+    print("Dry-run complete, nothing changed." if args.dry_run else "Done.")
 
 
 def cmd_stop(args):
-    unit = _resolve_target(args.target)
-    _confirm_and_run(["sudo", "systemctl", "stop", unit], "stop", unit, args.dry_run, args.yes)
+    unit = _resolve_single(_build_catalog(), args.target)
+    print("This will use sudo to stop:")
+    print(f"  {unit}")
+    print()
+    if not args.dry_run and not args.yes:
+        reply = input("Proceed? [y/N] ")
+        if reply.strip().lower() != "y":
+            print("Aborted.")
+            return
+    _run(["sudo", "systemctl", "stop", unit], args.dry_run)
+    print("Dry-run complete, nothing changed." if args.dry_run else "Done.")
+
+
+def _enable_or_disable(args, verb):
+    unit = _resolve_single(_build_catalog(), args.target)
+    paired = None if args.no_restart_timer else _paired_timer(unit)
+    now_suffix = " --now" if args.now else ""
+
+    print(f"This will use sudo to {verb}{now_suffix}:")
+    print(f"  {unit}")
+    if paired:
+        print(f"  {paired}  (paired restart timer -- pass --no-restart-timer to skip this)")
+    print()
+
+    if not args.dry_run and not args.yes:
+        reply = input("Proceed? [y/N] ")
+        if reply.strip().lower() != "y":
+            print("Aborted.")
+            return
+
+    now_flag = ["--now"] if args.now else []
+    _run(["sudo", "systemctl", verb, *now_flag, unit], args.dry_run)
+
+    if paired:
+        ok = _run_soft(["sudo", "systemctl", verb, *now_flag, paired], args.dry_run)
+        if not ok:
+            warn(
+                f"{unit} was {verb}d, but {paired} failed to {verb} -- its periodic restart isn't armed. "
+                f"If you haven't already, run `./llama-tool.py init` to install the restart-timer templates, "
+                f"then retry, or pass --no-restart-timer to manage it separately."
+            )
+
+    print("Dry-run complete, nothing changed." if args.dry_run else "Done.")
 
 
 def cmd_enable(args):
-    unit = _resolve_target(args.target)
-    cmd = ["sudo", "systemctl", "enable"] + (["--now"] if args.now else []) + [unit]
-    verb = "enable --now (start immediately + on boot)" if args.now else "enable (on boot only, not started now)"
-    _confirm_and_run(cmd, verb, unit, args.dry_run, args.yes)
+    _enable_or_disable(args, "enable")
 
 
 def cmd_disable(args):
-    unit = _resolve_target(args.target)
-    cmd = ["sudo", "systemctl", "disable"] + (["--now"] if args.now else []) + [unit]
-    verb = "disable --now (stop immediately + on boot)" if args.now else "disable (stops starting on boot, doesn't stop it now)"
-    _confirm_and_run(cmd, verb, unit, args.dry_run, args.yes)
+    _enable_or_disable(args, "disable")
 
 
 def run(args):
     {
         "list": cmd_list,
+        "status": cmd_status,
         "restart": cmd_restart,
         "start": cmd_start,
         "stop": cmd_stop,
@@ -220,30 +339,43 @@ def run(args):
 
 def _add_confirm_flags(parser):
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
-    parser.add_argument("-n", "--dry-run", action="store_true", help="Print the systemctl command without running it")
+    parser.add_argument("-n", "--dry-run", action="store_true", help="Print the systemctl command(s) without running them")
 
 
 def add_arguments(parser):
     sub = parser.add_subparsers(dest="services_command", required=True)
 
-    sub.add_parser("list", help="List llama-server/restart-timer/mem-report systemd units, numbered")
+    sub.add_parser(
+        "list",
+        help="List every preset + the main service + restart timers + mem-report, numbered, running or not",
+    )
+
+    p_status = sub.add_parser(
+        "status", help="Show `systemctl status` for one or more units from `list` (by number/name) -- did it start OK?",
+    )
+    p_status.add_argument(
+        "selector", nargs="+",
+        help="Number(s)/name(s) from `services list` (e.g. 1, or qwen3.5-9b, or 1 3 to check several at once).",
+    )
+    p_status.add_argument("-n", "--lines", type=int, default=None, help="How many recent log lines to show (systemctl's default if omitted)")
 
     p_restart = sub.add_parser(
         "restart",
-        help="Restart llama-server instance(s) (default: all loaded ones), or any unit from `list` by number/name",
+        help="Restart running llama-server instance(s) (default: all of them), or any unit from `list` by number/name",
     )
     p_restart.add_argument(
         "selector", nargs="*",
         help="Number(s)/name(s) from `services list` (e.g. 1 3, qwen3.5-9b, llama-mem-report). "
-             "Omit to restart every loaded llama-server/llama-server@* instance.",
+             "Omit to restart every currently-running llama-server/llama-server@* instance.",
     )
     _add_confirm_flags(p_restart)
 
-    def _target_arg(p, extra=""):
+    def _target_arg(p):
         p.add_argument(
             "target",
-            help="Preset name (-> llama-server@<preset>.service), 'llama-server' for the ACTIVE_PRESET "
-                 f"instance, or a full unit name (llama-mem-report, llama-server-restart.timer, ...).{extra}",
+            help="Number from `services list`, preset name (-> llama-server@<preset>.service), 'llama-server' "
+                 "for the ACTIVE_PRESET instance, or a full unit name (llama-mem-report, "
+                 "llama-server-restart.timer, ...).",
         )
 
     p_start = sub.add_parser("start", help="Start a unit now (not persisted across reboot -- see 'enable' for that)")
@@ -254,12 +386,26 @@ def add_arguments(parser):
     _target_arg(p_stop)
     _add_confirm_flags(p_stop)
 
-    p_enable = sub.add_parser("enable", help="Enable a unit to start on boot")
+    p_enable = sub.add_parser(
+        "enable",
+        help="Enable a preset/unit to start on boot (also arms its daily restart timer, unless --no-restart-timer)",
+    )
     _target_arg(p_enable)
     p_enable.add_argument("--now", action="store_true", help="Also start it immediately")
+    p_enable.add_argument(
+        "--no-restart-timer", action="store_true",
+        help="Don't also enable the paired llama-server-restart[@] timer",
+    )
     _add_confirm_flags(p_enable)
 
-    p_disable = sub.add_parser("disable", help="Disable a unit from starting on boot")
+    p_disable = sub.add_parser(
+        "disable",
+        help="Disable a preset/unit from starting on boot (also disarms its daily restart timer, unless --no-restart-timer)",
+    )
     _target_arg(p_disable)
     p_disable.add_argument("--now", action="store_true", help="Also stop it immediately")
+    p_disable.add_argument(
+        "--no-restart-timer", action="store_true",
+        help="Don't also disable the paired llama-server-restart[@] timer",
+    )
     _add_confirm_flags(p_disable)
