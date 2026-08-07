@@ -374,14 +374,14 @@ sudo systemctl enable --now llama-server-restart.timer
 
 ## Memory / GPU report
 
-`scripts/mem_report_server.py` serves a live, auto-refreshing HTML page —
-RAM/swap breakdown, AMD GPU VRAM/GTT usage, top processes by RSS and by
-swap, and recent OOM-killer history — useful for keeping an eye on the
+`scripts/llama_mem_report_server.py` serves a live, auto-refreshing HTML
+page — RAM/swap breakdown, AMD GPU VRAM/GTT usage, top processes by RSS and
+by swap, and recent OOM-killer history — useful for keeping an eye on the
 memory growth that the periodic-restart timers above are there to bound.
 Stdlib only, no pip install:
 
 ```bash
-python3 ./scripts/mem_report_server.py 9909    # port defaults to 8899 if omitted
+python3 ./scripts/llama_mem_report_server.py 9909    # port defaults to 8899 if omitted
 ```
 
 Then open `http://<host>:9909/` in a browser (auto-refreshes every 60s), or
@@ -391,29 +391,54 @@ caution as `LLAMA_API_KEY` above, but this one has no key at all.
 
 ### Running it as a service
 
-`deploy/mem-report.service` runs it on boot via systemd (port `9909`, same
-as above). Not installed by `llama-tool.py init` — it's an optional
+`deploy/llama-mem-report.service` runs it on boot via systemd (port `9909`,
+same as above). Not installed by `llama-tool.py init` — it's an optional
 diagnostics tool, not part of the llama-server lifecycle — so set it up by
 hand:
 
 ```bash
-$EDITOR deploy/mem-report.service   # set User=/Group=/WorkingDirectory= for your host, and the port if not 9909
-sudo cp ./deploy/mem-report.service /etc/systemd/system/mem-report.service
+$EDITOR deploy/llama-mem-report.service   # set User=/Group=/WorkingDirectory= for your host, and the port if not 9909
+sudo cp ./deploy/llama-mem-report.service /etc/systemd/system/llama-mem-report.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now mem-report
-systemctl status mem-report
+sudo systemctl enable --now llama-mem-report
+systemctl status llama-mem-report
 ```
 
 ## Debugging / status
 
-Quick reference for checking what's actually running on the host, across
-all the systemd units this repo installs.
+`llama-tool.py services` is the easiest way to see what's running and
+restart it, without having to remember unit names or glob patterns:
+
+```bash
+./llama-tool.py services list                # numbered list of llama-server units + state
+# 1) llama-server.service                       active running   Llama.cpp Vulkan Server
+# 2) llama-server@qwen3-embedding-0.6b.service   active running   Llama.cpp Vulkan Server (qwen3-embedding-0.6b)
+# 3) llama-server@qwen3.5-9b.service             active running   Llama.cpp Vulkan Server (qwen3.5-9b)
+
+./llama-tool.py services restart              # restart everything listed (confirms first, sudo required)
+./llama-tool.py services restart 2            # restart just #2 from the list above
+./llama-tool.py services restart 2 3          # restart #2 and #3
+./llama-tool.py services restart qwen3.5-9b   # or by preset/unit name instead of number
+./llama-tool.py services restart -y           # skip the confirmation prompt
+./llama-tool.py services restart --dry-run    # preview the systemctl command without running it
+```
+
+It only covers `llama-server.service` and `llama-server@<preset>.service` —
+not the `llama-server-restart[@]` timers (restarting those doesn't do
+anything useful directly) or `llama-mem-report` (a separate diagnostics
+tool, not an inference server). Numbers are positional, re-derived fresh
+from `systemctl list-units` on every invocation — safe to `list` and then
+`restart <n>` as two separate commands as long as nothing else
+starts/stops a unit in between.
+
+For the raw `systemctl`/`journalctl` commands `services` wraps (useful if
+you want more detail than the numbered list gives you):
 
 ```bash
 systemctl list-units 'llama-server*' --all       # every llama-server unit + state, running or not
 systemctl status 'llama-server@*'                # just the active @-instances, with preset name in each block
 systemctl status llama-server                    # the single ACTIVE_PRESET instance
-systemctl status mem-report                       # the memory/GPU report server, if installed
+systemctl status llama-mem-report                 # the memory/GPU report server, if installed
 
 systemctl list-timers 'llama-server-restart*'    # next/last fire time per preset's restart timer
 journalctl -u llama-server-restart.service --since -7d               # did the ACTIVE_PRESET restart actually run?

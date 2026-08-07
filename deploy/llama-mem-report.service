@@ -15,7 +15,7 @@ WorkingDirectory=/opt/llama-service
 
 # Port is the sole argument; edit it here to change it. Stdlib-only script,
 # no venv needed.
-ExecStart=/usr/bin/python3 /opt/llama-service/scripts/mem_report_server.py 9909
+ExecStart=/usr/bin/python3 /opt/llama-service/scripts/llama_mem_report_server.py 9909
 
 # If it crashes or the system reboots, restart it automatically
 Restart=always

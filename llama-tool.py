@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """llama-tool.py -- unified CLI for this repo's ops tooling.
 
-  init     One-time host setup: install systemd unit + logrotate config
-  run      Resolve config and launch llama-server
-  engine   Manage the vendored llama.cpp engine (install/check/list/use)
-  models   Download/manage GGUF models from Hugging Face
-  cache    Verify/analyze prompt-cache reuse (live check + log stats)
-  log      Tail the llama-server log (defaults to LLAMA_LOG_FILE)
+  init      One-time host setup: install systemd unit + logrotate config
+  run       Resolve config and launch llama-server
+  engine    Manage the vendored llama.cpp engine (install/check/list/use)
+  models    Download/manage GGUF models from Hugging Face
+  cache     Verify/analyze prompt-cache reuse (live check + log stats)
+  log       Tail the llama-server log (defaults to LLAMA_LOG_FILE)
+  services  List/restart the llama-server systemd unit(s)
 
 Run `llama-tool.py <command> --help` for a command's full options.
 Stdlib only -- no pip install, no venv needed.
@@ -28,6 +29,7 @@ from tools import init as init_mod
 from tools import log as log_mod
 from tools import models as models_mod
 from tools import run as run_mod
+from tools import services as services_mod
 
 
 def main():
@@ -56,6 +58,9 @@ def main():
     p_log = sub.add_parser("log", help="Tail the llama-server log")
     log_mod.add_arguments(p_log)
 
+    p_services = sub.add_parser("services", help="List/restart the llama-server systemd unit(s)")
+    services_mod.add_arguments(p_services)
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -70,6 +75,8 @@ def main():
         cache_mod.run(args)
     elif args.command == "log":
         log_mod.run(args)
+    elif args.command == "services":
+        services_mod.run(args)
 
 
 if __name__ == "__main__":

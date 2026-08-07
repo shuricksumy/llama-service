@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-mem_report_server.py — serves the RAM / GPU / Swap report as an HTML page.
+llama_mem_report_server.py — serves the RAM / GPU / Swap report as an HTML page.
 No pip installs needed — stdlib only.
 
 Usage:
-    python3 mem_report_server.py [port]        # default port 8899
+    python3 llama_mem_report_server.py [port]        # default port 8899
 
 Then open in a browser (or curl):
     http://<server-ip>:8899/
