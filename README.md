@@ -372,6 +372,38 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now llama-server-restart.timer
 ```
 
+## Memory / GPU report
+
+`scripts/mem_report_server.py` serves a live, auto-refreshing HTML page —
+RAM/swap breakdown, AMD GPU VRAM/GTT usage, top processes by RSS and by
+swap, and recent OOM-killer history — useful for keeping an eye on the
+memory growth that the periodic-restart timers above are there to bound.
+Stdlib only, no pip install:
+
+```bash
+python3 ./scripts/mem_report_server.py 9909    # port defaults to 8899 if omitted
+```
+
+Then open `http://<host>:9909/` in a browser (auto-refreshes every 60s), or
+`curl http://<host>:9909/`. It binds `0.0.0.0` with no authentication, so
+only run it on a trusted network or behind a firewall/reverse proxy — same
+caution as `LLAMA_API_KEY` above, but this one has no key at all.
+
+### Running it as a service
+
+`deploy/mem-report.service` runs it on boot via systemd (port `9909`, same
+as above). Not installed by `llama-tool.py init` — it's an optional
+diagnostics tool, not part of the llama-server lifecycle — so set it up by
+hand:
+
+```bash
+$EDITOR deploy/mem-report.service   # set User=/Group=/WorkingDirectory= for your host, and the port if not 9909
+sudo cp ./deploy/mem-report.service /etc/systemd/system/mem-report.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now mem-report
+systemctl status mem-report
+```
+
 ## Vulkan / render group access
 
 ```bash

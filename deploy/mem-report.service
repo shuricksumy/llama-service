@@ -1,0 +1,25 @@
+[Unit]
+Description=Memory / GPU / Swap Report HTTP Server
+After=network.target
+
+[Service]
+# Run as an unprivileged user. Defaults to UID/GID 1000 (systemd accepts a
+# numeric id here) -- the first regular user on most Debian/Ubuntu hosts.
+# Edit to your actual username/group if that doesn't match (see README.md's
+# "Memory / GPU report").
+User=1000
+Group=1000
+
+# Set the working directory -- must match wherever you cloned this repo.
+WorkingDirectory=/opt/llama-service
+
+# Port is the sole argument; edit it here to change it. Stdlib-only script,
+# no venv needed.
+ExecStart=/usr/bin/python3 /opt/llama-service/scripts/mem_report_server.py 9909
+
+# If it crashes or the system reboots, restart it automatically
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
