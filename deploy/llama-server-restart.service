@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodic restart of llama-server (clears accumulated memory/fragmentation)
+After=network.target
+
+[Service]
+Type=oneshot
+# try-restart is a no-op if llama-server.service isn't currently running,
+# so this is safe to leave enabled even if the service is stopped for a while.
+ExecStart=/bin/systemctl try-restart llama-server.service

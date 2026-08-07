@@ -1,13 +1,16 @@
 """llama-tool.py init -- one-time host setup after cloning this repo.
 
-Installs the systemd units (the single-instance llama-server.service, plus
-the llama-server@.service template for running several presets at once)
-and logrotate config (from deploy/) via sudo, and enables llama-server.service
-to start on boot. Does NOT start any service (there's no engine/model
-installed yet on a fresh clone -- run `engine install` and `models download`
-first) and does NOT touch user/group membership (see README.md's "Vulkan /
-render group access" section for that, which is host/GPU-specific enough
-that it isn't safe to automate here).
+Installs the systemd units (the single-instance llama-server.service, the
+llama-server@.service template for running several presets at once, and the
+llama-server-restart[@].timer/.service pairs for periodic memory-clearing
+restarts) and logrotate config (from deploy/) via sudo, and enables
+llama-server.service to start on boot. Does NOT start any service (there's
+no engine/model installed yet on a fresh clone -- run `engine install` and
+`models download` first), does NOT enable the restart timers (opt-in
+per-host, see README.md's "Periodic restart" section), and does NOT touch
+user/group membership (see README.md's "Vulkan / render group access"
+section for that, which is host/GPU-specific enough that it isn't safe to
+automate here).
 """
 import subprocess
 
@@ -17,9 +20,17 @@ DEPLOY_DIR = REPO_ROOT / "deploy"
 SERVICE_SRC = DEPLOY_DIR / "llama-server.service"
 TEMPLATE_SRC = DEPLOY_DIR / "llama-server@.service"
 LOGROTATE_SRC = DEPLOY_DIR / "llama-server.logrotate"
+RESTART_SERVICE_SRC = DEPLOY_DIR / "llama-server-restart.service"
+RESTART_TIMER_SRC = DEPLOY_DIR / "llama-server-restart.timer"
+RESTART_TEMPLATE_SERVICE_SRC = DEPLOY_DIR / "llama-server-restart@.service"
+RESTART_TEMPLATE_TIMER_SRC = DEPLOY_DIR / "llama-server-restart@.timer"
 SERVICE_DEST = "/etc/systemd/system/llama-server.service"
 TEMPLATE_DEST = "/etc/systemd/system/llama-server@.service"
 LOGROTATE_DEST = "/etc/logrotate.d/llama-server"
+RESTART_SERVICE_DEST = "/etc/systemd/system/llama-server-restart.service"
+RESTART_TIMER_DEST = "/etc/systemd/system/llama-server-restart.timer"
+RESTART_TEMPLATE_SERVICE_DEST = "/etc/systemd/system/llama-server-restart@.service"
+RESTART_TEMPLATE_TIMER_DEST = "/etc/systemd/system/llama-server-restart@.timer"
 
 
 def _run(cmd, dry_run):
@@ -32,23 +43,36 @@ def _run(cmd, dry_run):
 
 
 def run(args):
-    if not SERVICE_SRC.is_file():
-        die(f"missing {SERVICE_SRC.relative_to(REPO_ROOT)}")
-    if not TEMPLATE_SRC.is_file():
-        die(f"missing {TEMPLATE_SRC.relative_to(REPO_ROOT)}")
-    if not LOGROTATE_SRC.is_file():
-        die(f"missing {LOGROTATE_SRC.relative_to(REPO_ROOT)}")
+    required = [
+        SERVICE_SRC, TEMPLATE_SRC, LOGROTATE_SRC,
+        RESTART_SERVICE_SRC, RESTART_TIMER_SRC,
+        RESTART_TEMPLATE_SERVICE_SRC, RESTART_TEMPLATE_TIMER_SRC,
+    ]
+    for src in required:
+        if not src.is_file():
+            die(f"missing {src.relative_to(REPO_ROOT)}")
+
+    installs = [
+        (SERVICE_SRC, SERVICE_DEST),
+        (TEMPLATE_SRC, TEMPLATE_DEST),
+        (LOGROTATE_SRC, LOGROTATE_DEST),
+        (RESTART_SERVICE_SRC, RESTART_SERVICE_DEST),
+        (RESTART_TIMER_SRC, RESTART_TIMER_DEST),
+        (RESTART_TEMPLATE_SERVICE_SRC, RESTART_TEMPLATE_SERVICE_DEST),
+        (RESTART_TEMPLATE_TIMER_SRC, RESTART_TEMPLATE_TIMER_DEST),
+    ]
 
     print("This will use sudo to:")
-    print(f"  copy {SERVICE_SRC.relative_to(REPO_ROOT)} -> {SERVICE_DEST}")
-    print(f"  copy {TEMPLATE_SRC.relative_to(REPO_ROOT)} -> {TEMPLATE_DEST}")
-    print(f"  copy {LOGROTATE_SRC.relative_to(REPO_ROOT)} -> {LOGROTATE_DEST}")
+    for src, dest in installs:
+        print(f"  copy {src.relative_to(REPO_ROOT)} -> {dest}")
     print("  systemctl daemon-reload")
     if not args.no_enable:
         print("  systemctl enable llama-server")
     print()
     print("It will NOT start any service, and will NOT touch user/group")
-    print("membership (see README.md for Vulkan/render group setup).")
+    print("membership (see README.md for Vulkan/render group setup). The")
+    print("periodic-restart timers are installed but left disabled -- opt")
+    print("in per-host (see 'Next' below).")
     print()
 
     if not args.dry_run and not args.yes:
@@ -57,9 +81,8 @@ def run(args):
             print("Aborted.")
             return
 
-    _run(["sudo", "cp", str(SERVICE_SRC), SERVICE_DEST], args.dry_run)
-    _run(["sudo", "cp", str(TEMPLATE_SRC), TEMPLATE_DEST], args.dry_run)
-    _run(["sudo", "cp", str(LOGROTATE_SRC), LOGROTATE_DEST], args.dry_run)
+    for src, dest in installs:
+        _run(["sudo", "cp", str(src), dest], args.dry_run)
     _run(["sudo", "systemctl", "daemon-reload"], args.dry_run)
     if not args.no_enable:
         _run(["sudo", "systemctl", "enable", "llama-server"], args.dry_run)
@@ -76,6 +99,11 @@ def run(args):
     print("the llama-server@.service template instead (see README.md's")
     print("'Running several models at once'), e.g.:")
     print("  sudo systemctl enable --now llama-server@<preset>")
+    print()
+    print("To restart a service daily at 03:00 (clears accumulated memory),")
+    print("opt in per service -- not enabled automatically:")
+    print("  sudo systemctl enable --now llama-server-restart.timer")
+    print("  sudo systemctl enable --now llama-server-restart@<preset>.timer")
 
 
 def add_arguments(parser):

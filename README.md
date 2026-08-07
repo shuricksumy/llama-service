@@ -38,13 +38,15 @@ match your actual user and wherever you cloned this repo *before* running
 need the same edit if you didn't clone to `/opt/llama-service`.
 
 `init` copies `deploy/llama-server.service`, `deploy/llama-server@.service`,
-and `deploy/llama-server.logrotate` into `/etc/` via `sudo` and runs
+`deploy/llama-server.logrotate`, and the `deploy/llama-server-restart[@].service`/
+`.timer` pairs (see "Periodic restart" below) into `/etc/` via `sudo` and runs
 `systemctl daemon-reload` + `enable` (for `llama-server.service` only —
 see "Installing the systemd service" below for exactly what it does and how
 to do it by hand instead). It shows every command before running it and asks
 for confirmation (`-y` to skip, `--dry-run` to preview, `--no-enable` to
-skip the boot-enable step). It does not start any service or touch
-user/group membership — see "Vulkan / render group access" for that.
+skip the boot-enable step). It does not start any service, does not enable
+the restart timers (opt in per-host, see "Periodic restart"), and does not
+touch user/group membership — see "Vulkan / render group access" for that.
 
 ### Secrets
 
@@ -336,6 +338,39 @@ sudo logrotate -vf /etc/logrotate.d/llama-server
 Covers both `llama-server.log` (the single-instance/`ACTIVE_PRESET` service)
 and `llama-server-*.log` (per-preset logs from the `llama-server@.service`
 template).
+
+## Periodic restart
+
+`llama-server` (or any long-running inference server) can accumulate
+fragmented/leaked memory over days of uptime. To bound that, `init` also
+installs (but does not enable) a pair of systemd timers that restart the
+service daily at 03:00, ±5 min randomized delay so it doesn't land on the
+same instant every host:
+
+```bash
+sudo systemctl enable --now llama-server-restart.timer               # for llama-server.service
+sudo systemctl enable --now llama-server-restart@<preset>.timer      # for llama-server@<preset>.service
+systemctl list-timers 'llama-server-restart*'                        # confirm schedule
+```
+
+Each timer triggers a oneshot `systemctl try-restart` — a no-op if that
+service isn't currently running, so it's safe to leave enabled even while
+a service is stopped for maintenance. `Restart=always` on the underlying
+service (see `deploy/llama-server.service`) already brings it back up.
+To change the time, edit `deploy/llama-server-restart.timer`'s (and/or
+`deploy/llama-server-restart@.timer`'s) `OnCalendar=` line, re-run `init`,
+then `sudo systemctl daemon-reload`.
+
+By hand, without `init`:
+
+```bash
+sudo cp ./deploy/llama-server-restart.service  /etc/systemd/system/llama-server-restart.service
+sudo cp ./deploy/llama-server-restart.timer    /etc/systemd/system/llama-server-restart.timer
+sudo cp ./deploy/llama-server-restart@.service /etc/systemd/system/llama-server-restart@.service
+sudo cp ./deploy/llama-server-restart@.timer   /etc/systemd/system/llama-server-restart@.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now llama-server-restart.timer
+```
 
 ## Vulkan / render group access
 
