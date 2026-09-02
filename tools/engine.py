@@ -33,7 +33,21 @@ def latest_tag() -> str:
     )
     with urlopen(req, description="GitHub releases API") as resp:
         data = json.loads(resp.read())
-    return data["tag_name"]
+
+    # ggml-org/llama.cpp's CI marks every per-commit binary build (tag
+    # "bNNNN") as a GitHub prerelease, so /releases/latest -- which only
+    # ever returns the latest non-prerelease, non-draft release -- resolves
+    # instead to a versioned marker release (e.g. "v0.3.0") that ships no
+    # binaries of its own, just a "nightly-tag.txt" asset naming the
+    # current known-good build. Follow that pointer when present; fall back
+    # to the release's own tag otherwise (covers upstream reverting this).
+    pointer = next((a for a in data.get("assets", []) if a["name"] == "nightly-tag.txt"), None)
+    if pointer is None:
+        return data["tag_name"]
+
+    req = urllib.request.Request(pointer["browser_download_url"])
+    with urlopen(req, description="nightly-tag.txt") as resp:
+        return resp.read().decode().strip()
 
 
 def active_version():
