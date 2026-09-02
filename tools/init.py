@@ -1,36 +1,40 @@
 """llama-tool.py init -- one-time host setup after cloning this repo.
 
-Installs the systemd units (the single-instance llama-server.service, the
-llama-server@.service template for running several presets at once, and the
-llama-server-restart[@].timer/.service pairs for periodic memory-clearing
-restarts) and logrotate config (from deploy/) via sudo, and enables
-llama-server.service to start on boot. Does NOT start any service (there's
-no engine/model installed yet on a fresh clone -- run `engine install` and
-`models download` first), does NOT enable the restart timers (opt-in
-per-host, see README.md's "Periodic restart" section), and does NOT touch
-user/group membership (see README.md's "Vulkan / render group access"
-section for that, which is host/GPU-specific enough that it isn't safe to
-automate here).
+Installs the systemd units (the llama-server@.service template for running
+presets as named services, and the llama-server-restart@.timer/.service
+pair for periodic memory-clearing restarts) and logrotate config (from
+deploy/) via sudo. Does NOT start or enable any service -- there's no
+"default" service anymore (every preset runs as its own named
+llama-server@<preset> instance; see `llama-tool.py services enable
+<preset> --now`), and nothing's installed yet on a fresh clone anyway (run
+`engine install` and `models download` first). Does NOT touch user/group
+membership (see README.md's "Vulkan / render group access" section for
+that, which is host/GPU-specific enough that it isn't safe to automate
+here).
 """
+import os
 import subprocess
 
 from ._common import REPO_ROOT, die
 
 DEPLOY_DIR = REPO_ROOT / "deploy"
-SERVICE_SRC = DEPLOY_DIR / "llama-server.service"
 TEMPLATE_SRC = DEPLOY_DIR / "llama-server@.service"
 LOGROTATE_SRC = DEPLOY_DIR / "llama-server.logrotate"
-RESTART_SERVICE_SRC = DEPLOY_DIR / "llama-server-restart.service"
-RESTART_TIMER_SRC = DEPLOY_DIR / "llama-server-restart.timer"
 RESTART_TEMPLATE_SERVICE_SRC = DEPLOY_DIR / "llama-server-restart@.service"
 RESTART_TEMPLATE_TIMER_SRC = DEPLOY_DIR / "llama-server-restart@.timer"
-SERVICE_DEST = "/etc/systemd/system/llama-server.service"
 TEMPLATE_DEST = "/etc/systemd/system/llama-server@.service"
 LOGROTATE_DEST = "/etc/logrotate.d/llama-server"
-RESTART_SERVICE_DEST = "/etc/systemd/system/llama-server-restart.service"
-RESTART_TIMER_DEST = "/etc/systemd/system/llama-server-restart.timer"
 RESTART_TEMPLATE_SERVICE_DEST = "/etc/systemd/system/llama-server-restart@.service"
 RESTART_TEMPLATE_TIMER_DEST = "/etc/systemd/system/llama-server-restart@.timer"
+
+# Units an older clone of this repo may have installed that no longer exist
+# here -- init offers to remove them (see "Migrating off llama-server.service"
+# in README.md) so a stale unit doesn't linger in `systemctl list-units`.
+RETIRED_UNIT_DESTS = [
+    "/etc/systemd/system/llama-server.service",
+    "/etc/systemd/system/llama-server-restart.service",
+    "/etc/systemd/system/llama-server-restart.timer",
+]
 
 
 def _run(cmd, dry_run):
@@ -43,36 +47,44 @@ def _run(cmd, dry_run):
 
 
 def run(args):
-    required = [
-        SERVICE_SRC, TEMPLATE_SRC, LOGROTATE_SRC,
-        RESTART_SERVICE_SRC, RESTART_TIMER_SRC,
-        RESTART_TEMPLATE_SERVICE_SRC, RESTART_TEMPLATE_TIMER_SRC,
-    ]
+    required = [TEMPLATE_SRC, LOGROTATE_SRC, RESTART_TEMPLATE_SERVICE_SRC, RESTART_TEMPLATE_TIMER_SRC]
     for src in required:
         if not src.is_file():
             die(f"missing {src.relative_to(REPO_ROOT)}")
 
     installs = [
-        (SERVICE_SRC, SERVICE_DEST),
         (TEMPLATE_SRC, TEMPLATE_DEST),
         (LOGROTATE_SRC, LOGROTATE_DEST),
-        (RESTART_SERVICE_SRC, RESTART_SERVICE_DEST),
-        (RESTART_TIMER_SRC, RESTART_TIMER_DEST),
         (RESTART_TEMPLATE_SERVICE_SRC, RESTART_TEMPLATE_SERVICE_DEST),
         (RESTART_TEMPLATE_TIMER_SRC, RESTART_TEMPLATE_TIMER_DEST),
     ]
+
+    stale = [dest for dest in RETIRED_UNIT_DESTS if os.path.exists(dest)]
 
     print("This will use sudo to:")
     for src, dest in installs:
         print(f"  copy {src.relative_to(REPO_ROOT)} -> {dest}")
     print("  systemctl daemon-reload")
-    if not args.no_enable:
-        print("  systemctl enable llama-server")
+    if stale:
+        print()
+        print("It also found retired unit(s) from an older clone of this repo:")
+        for dest in stale:
+            print(f"  {dest}")
+        print("These are no longer installed by this repo (see README.md's")
+        print("'Migrating off llama-server.service') -- if a service by that")
+        print("name is still running, stop/disable it first:")
+        print("  sudo systemctl disable --now llama-server")
+        print("Then remove the stale file(s) by hand:")
+        for dest in stale:
+            print(f"  sudo rm {dest}")
+        print("(init does not remove them for you -- deleting a unit file")
+        print("out from under a running service is not something to automate.)")
     print()
-    print("It will NOT start any service, and will NOT touch user/group")
-    print("membership (see README.md for Vulkan/render group setup). The")
-    print("periodic-restart timers are installed but left disabled -- opt")
-    print("in per-host (see 'Next' below).")
+    print("It will NOT start or enable any service -- every preset runs as")
+    print("its own named service now, so there's no single default to enable.")
+    print("It will NOT touch user/group membership (see README.md for")
+    print("Vulkan/render group setup). The periodic-restart timer is")
+    print("installed but left disabled -- opt in per-preset (see 'Next' below).")
     print()
 
     if not args.dry_run and not args.yes:
@@ -84,8 +96,6 @@ def run(args):
     for src, dest in installs:
         _run(["sudo", "cp", str(src), dest], args.dry_run)
     _run(["sudo", "systemctl", "daemon-reload"], args.dry_run)
-    if not args.no_enable:
-        _run(["sudo", "systemctl", "enable", "llama-server"], args.dry_run)
 
     print()
     print("Dry-run complete, nothing changed." if args.dry_run else "Done.")
@@ -93,20 +103,13 @@ def run(args):
     print("Next:")
     print("  ./llama-tool.py engine install")
     print("  ./llama-tool.py models download <org>/<repo> <file.gguf>")
-    print("  sudo systemctl start llama-server")
+    print("  ./llama-tool.py services enable <preset> --now")
     print()
-    print("To run additional presets alongside it as separate services, use")
-    print("the llama-server@.service template instead (see README.md's")
-    print("'Running several models at once'), e.g.:")
-    print("  sudo systemctl enable --now llama-server@<preset>")
-    print()
-    print("To restart a service daily at 03:00 (clears accumulated memory),")
-    print("opt in per service -- not enabled automatically:")
-    print("  sudo systemctl enable --now llama-server-restart.timer")
-    print("  sudo systemctl enable --now llama-server-restart@<preset>.timer")
+    print("That last step also arms the preset's daily 03:00 restart timer")
+    print("(clears accumulated memory) in the same call -- see")
+    print("`llama-tool.py services --help` / README.md's 'Debugging / status'.")
 
 
 def add_arguments(parser):
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
     parser.add_argument("-n", "--dry-run", action="store_true", help="Print what would be done without doing it")
-    parser.add_argument("--no-enable", action="store_true", help="Install files but don't enable the service on boot")

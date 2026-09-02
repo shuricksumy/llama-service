@@ -1,18 +1,18 @@
 """llama-tool.py services -- single place to see and manage every preset's
-systemd lifecycle: `llama-server.service` (the ACTIVE_PRESET instance),
-`llama-server@<preset>.service` for each preset under `presets/*.env`
-(whether or not it's currently running), the paired `llama-server-restart[@]`
-periodic-restart timers, and `llama-mem-report.service`.
+systemd lifecycle: `llama-server@<preset>.service` for each preset under
+`presets/*.env` (whether or not it's currently running -- every preset runs
+as its own named service, there's no anonymous default instance), the
+paired `llama-server-restart@` periodic-restart timers, and
+`llama-mem-report.service`.
 
 `list`/`status` need no privileges; every other subcommand shells out to
 `sudo systemctl <verb>`. `start`/`stop`/`enable`/`disable`/`status` take
 target(s) -- a number from the last `list`, a preset name (-> `llama-server@
-<preset>.service`), `llama-server`/`llama-mem-report`, or a full unit name --
-and (except `status`) work even if that unit has never been loaded yet,
-which is how a brand new preset gets turned into a running service for the
-first time.
+<preset>.service`), `llama-mem-report`, or a full unit name -- and (except
+`status`) work even if that unit has never been loaded yet, which is how a
+brand new preset gets turned into a running service for the first time.
 
-`enable`/`disable` additionally bring the preset's `llama-server-restart[@]`
+`enable`/`disable` additionally bring the preset's `llama-server-restart@`
 *timer* along for the ride (enabling a preset also arms its daily restart;
 disabling it disarms that restart too) -- pass `--no-restart-timer` to
 manage the timer separately instead. `start`/`stop` are deliberately not
@@ -21,24 +21,20 @@ persist across reboots.
 
 `restart` works off the same catalog `list` prints (by number, unit name,
 or preset name); with no selector it restarts every *currently running*
-llama-server/llama-server@* instance (not timers or mem-report -- select
-those explicitly by number/name if that's what you want restarted).
+llama-server@* instance (not timers or mem-report -- select those
+explicitly by number/name if that's what you want restarted).
 """
 import subprocess
 
 from ._common import die, warn
-from ._env import list_presets, resolve_env
+from ._env import list_presets
 
-CORE_PATTERNS = ["llama-server.service", "llama-server@*.service"]
-TIMER_PATTERNS = [
-    "llama-server-restart.service", "llama-server-restart.timer",
-    "llama-server-restart@*.service", "llama-server-restart@*.timer",
-]
+CORE_PATTERNS = ["llama-server@*.service"]
+TIMER_PATTERNS = ["llama-server-restart@*.service", "llama-server-restart@*.timer"]
 REPORT_PATTERNS = ["llama-mem-report.service"]
 ALL_PATTERNS = CORE_PATTERNS + TIMER_PATTERNS + REPORT_PATTERNS
 
 SPECIAL_UNITS = {
-    "llama-server": "llama-server.service",
     "llama-mem-report": "llama-mem-report.service",
 }
 
@@ -70,12 +66,9 @@ def _systemctl_loaded(patterns):
 
 
 def _paired_timer(unit):
-    """llama-server.service -> llama-server-restart.timer;
-    llama-server@<preset>.service -> llama-server-restart@<preset>.timer;
+    """llama-server@<preset>.service -> llama-server-restart@<preset>.timer;
     anything else (mem-report, a timer itself, ...) -> None.
     """
-    if unit == "llama-server.service":
-        return "llama-server-restart.timer"
     prefix, suffix = "llama-server@", ".service"
     if unit.startswith(prefix) and unit.endswith(suffix):
         preset = unit[len(prefix):-len(suffix)]
@@ -85,10 +78,10 @@ def _paired_timer(unit):
 
 def _build_catalog():
     """Ordered list of every unit this repo cares about, whether or not
-    it's currently loaded: the main ACTIVE_PRESET slot, one row per preset
-    in presets/*.env, then loaded restart timers, then a loaded mem-report.
-    Each entry: unit, label, category (0=llama-server, 1=timer, 2=report),
-    loaded, active, sub, timer_note (category 0 only).
+    it's currently loaded: one row per preset in presets/*.env, then loaded
+    restart timers, then a loaded mem-report. Each entry: unit, label,
+    category (0=llama-server, 1=timer, 2=report), loaded, active, sub,
+    timer_note (category 0 only).
     """
     loaded = _systemctl_loaded(ALL_PATTERNS)
     catalog = []
@@ -107,9 +100,6 @@ def _build_catalog():
             tu = loaded.get(paired) if paired else None
             entry["timer_note"] = "restart timer: armed" if (tu and tu["active"] == "active") else "restart timer: off"
         catalog.append(entry)
-
-    active_preset = resolve_env(None).get("ACTIVE_PRESET", "")
-    add("llama-server.service", f"llama-server [ACTIVE_PRESET={active_preset or '?'}]", 0)
 
     for name, _desc in list_presets():
         add(f"llama-server@{name}.service", name, 0)
@@ -151,15 +141,17 @@ def _print_catalog(catalog):
 
 
 def _resolve_target(name):
-    """Bare preset name -> llama-server@<name>.service; 'llama-server' /
-    'llama-mem-report' -> their exact unit; anything already ending in
-    .service/.timer (a full unit name, e.g. llama-server-restart@foo.timer)
-    is passed through as-is. Checking the suffix rather than "contains a
-    dot" matters because preset names themselves often have dots in them
-    (e.g. qwen3.5-9b, qwen3-embedding-0.6b).
+    """Bare preset name -> llama-server@<name>.service; 'llama-mem-report'
+    -> its exact unit; anything already ending in .service/.timer (a full
+    unit name, e.g. llama-server-restart@foo.timer) is passed through as-is.
+    Checking the suffix rather than "contains a dot" matters because preset
+    names themselves often have dots in them (e.g. qwen3.5-9b,
+    qwen3-embedding-0.6b).
     """
-    if not name or name in SPECIAL_UNITS:
-        return SPECIAL_UNITS.get(name, "llama-server.service")
+    if name in SPECIAL_UNITS:
+        return SPECIAL_UNITS[name]
+    if not name:
+        die("no preset/unit name given")
     if name.endswith(".service") or name.endswith(".timer"):
         return name
     return f"llama-server@{name}.service"
@@ -237,7 +229,7 @@ def cmd_restart(args):
         targets = [e["unit"] for e in catalog if e["category"] == 0 and e["loaded"] and e["active"] == "active"]
         if not targets:
             die(
-                "no llama-server.service/llama-server@* instances are currently running -- nothing to restart.\n"
+                "no llama-server@* instances are currently running -- nothing to restart.\n"
                 "Pass a number/name from `services list` to restart a specific unit (e.g. a timer or "
                 "llama-mem-report), or `services start <preset>` to bring up a new one."
             )
@@ -347,7 +339,7 @@ def add_arguments(parser):
 
     sub.add_parser(
         "list",
-        help="List every preset + the main service + restart timers + mem-report, numbered, running or not",
+        help="List every preset + its restart timer + mem-report, numbered, running or not",
     )
 
     p_status = sub.add_parser(
@@ -361,21 +353,20 @@ def add_arguments(parser):
 
     p_restart = sub.add_parser(
         "restart",
-        help="Restart running llama-server instance(s) (default: all of them), or any unit from `list` by number/name",
+        help="Restart running preset instance(s) (default: all of them), or any unit from `list` by number/name",
     )
     p_restart.add_argument(
         "selector", nargs="*",
         help="Number(s)/name(s) from `services list` (e.g. 1 3, qwen3.5-9b, llama-mem-report). "
-             "Omit to restart every currently-running llama-server/llama-server@* instance.",
+             "Omit to restart every currently-running llama-server@* instance.",
     )
     _add_confirm_flags(p_restart)
 
     def _target_arg(p):
         p.add_argument(
             "target",
-            help="Number from `services list`, preset name (-> llama-server@<preset>.service), 'llama-server' "
-                 "for the ACTIVE_PRESET instance, or a full unit name (llama-mem-report, "
-                 "llama-server-restart.timer, ...).",
+            help="Number from `services list`, preset name (-> llama-server@<preset>.service), or a full "
+                 "unit name (llama-mem-report, llama-server-restart@<preset>.timer, ...).",
         )
 
     p_start = sub.add_parser("start", help="Start a unit now (not persisted across reboot -- see 'enable' for that)")

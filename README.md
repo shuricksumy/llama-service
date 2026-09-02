@@ -20,33 +20,30 @@ After cloning this repo onto a host:
 ```bash
 cp deploy/llama-server.env.example deploy/llama-server.env
 $EDITOR deploy/llama-server.env             # set LLAMA_API_KEY (gitignored, never committed)
-$EDITOR deploy/llama-server.service         # set User=/Group=/WorkingDirectory= for your host (see below)
-$EDITOR deploy/llama-server@.service        # same edits, for the multi-instance template (see below)
-./llama-tool.py init                        # installs the systemd units + logrotate config, enables on boot
+$EDITOR deploy/llama-server@.service        # set User=/Group=/WorkingDirectory= for your host (see below)
+./llama-tool.py init                        # installs the systemd unit template + logrotate config
 ./llama-tool.py engine install              # fetches llama-server into vendor/llama.cpp/
 ./llama-tool.py models download <org>/<repo> <file.gguf>   # fetches a model, generates a preset
-sudo systemctl start llama-server
+./llama-tool.py services enable <preset> --now
 ```
 
-`deploy/llama-server.service` ships with generic defaults — `User=1000`/`Group=1000`
+`deploy/llama-server@.service` ships with generic defaults — `User=1000`/`Group=1000`
 (the first regular user on most Debian/Ubuntu hosts; systemd accepts a
 numeric id here) and `WorkingDirectory=/opt/llama-service`. Edit both to
 match your actual user and wherever you cloned this repo *before* running
 `init`, since it copies the file as-is into `/etc/systemd/system/`.
-`deploy/llama-server@.service` (see "Running several models at once") and
-`deploy/llama-server.logrotate` have the same working-directory path and
-need the same edit if you didn't clone to `/opt/llama-service`.
+`deploy/llama-server.logrotate` has the same working-directory path and
+needs the same edit if you didn't clone to `/opt/llama-service`.
 
-`init` copies `deploy/llama-server.service`, `deploy/llama-server@.service`,
-`deploy/llama-server.logrotate`, and the `deploy/llama-server-restart[@].service`/
-`.timer` pairs (see "Periodic restart" below) into `/etc/` via `sudo` and runs
-`systemctl daemon-reload` + `enable` (for `llama-server.service` only —
-see "Installing the systemd service" below for exactly what it does and how
-to do it by hand instead). It shows every command before running it and asks
-for confirmation (`-y` to skip, `--dry-run` to preview, `--no-enable` to
-skip the boot-enable step). It does not start any service, does not enable
-the restart timers (opt in per-host, see "Periodic restart"), and does not
-touch user/group membership — see "Vulkan / render group access" for that.
+`init` copies `deploy/llama-server@.service` (the template every preset
+runs as — see "Running models as services"), `deploy/llama-server.logrotate`,
+and the `deploy/llama-server-restart@.service`/`.timer` pair (see "Periodic
+restart" below) into `/etc/` via `sudo` and runs `systemctl daemon-reload`.
+It shows every command before running it and asks for confirmation (`-y`
+to skip, `--dry-run` to preview). It does not start or enable any service —
+every preset runs as its own named service, so there's no single default
+to enable — and does not touch user/group membership — see "Vulkan /
+render group access" for that.
 
 ### Secrets
 
@@ -123,10 +120,13 @@ Set `HF_TOKEN` to access gated/private Hugging Face repos.
 
 ```bash
 ./llama-tool.py run --list              # see available presets
-./llama-tool.py run qwen3.5-9b          # run a specific preset
-./llama-tool.py run                     # run $ACTIVE_PRESET from llama.env
+./llama-tool.py run qwen3.5-9b          # run a specific preset in the foreground
+./llama-tool.py run                     # run $ACTIVE_PRESET from llama.env (CLI convenience default)
 ./llama-tool.py run qwen3.5-9b --dry-run   # print the resolved command, don't launch
 ```
+
+That's for manual/foreground use (testing, debugging a preset). To run it
+as a proper managed service instead, see "Running models as services" below.
 
 Any `LLAMA_*` variable can be overridden for a single run without editing
 files:
@@ -155,24 +155,15 @@ with a clear error if something's missing (`--dry-run` downgrades these to
 warnings so you can preview a command from a machine that doesn't have the
 model files, e.g. before pushing config to the actual host).
 
-### Running several models at once
+### Running models as services
 
 Any preset can already be run standalone (`./llama-tool.py run <preset> &`
-in a second shell, or two separate terminals) as long as its `LLAMA_PORT`
-doesn't collide with another running instance's. To have systemd manage
-several presets as independent, auto-restarting services instead of one
-`ACTIVE_PRESET`, use the `llama-server@.service` template installed by
-`init` (see "Installing the systemd service"):
-
-```bash
-sudo systemctl enable --now llama-server@qwen3.5-9b
-sudo systemctl enable --now llama-server@qwen3-embedding-0.6b
-systemctl status 'llama-server@*'
-```
-
-or the equivalent, shorter `llama-tool.py services` form (see "Debugging /
-status" below) — same effect, just the bare preset name instead of the
-full unit name:
+in a second shell, or two separate terminals) for quick testing, as long as
+its `LLAMA_PORT` doesn't collide with another running instance's. For a
+real, auto-restarting, boot-persistent service, every preset runs as its
+own named instance of the `llama-server@.service` template installed by
+`init` — there's no separate "the one default service," every preset gets
+the same treatment:
 
 ```bash
 ./llama-tool.py services enable qwen3.5-9b --now
@@ -180,9 +171,15 @@ full unit name:
 ./llama-tool.py services list
 ```
 
+(the equivalent by hand: `sudo systemctl enable --now llama-server@qwen3.5-9b`
+— see "Debugging / status" below for the full `services` command set,
+including `status`/`restart`/`disable`.)
+
 Each instance gets its own log at `llama-server-<preset>.log`; pass that
-path explicitly to `llama-tool.py log`/`cache stats` since `LLAMA_LOG_FILE`
-only covers the plain `llama-server.service` / `ACTIVE_PRESET` path.
+path explicitly to `llama-tool.py log`/`cache stats`, or rely on
+`LLAMA_LOG_FILE`'s default, which points at whichever preset `ACTIVE_PRESET`
+names in `llama.env` (a CLI convenience only — it has no effect on which
+services actually run).
 
 ### Embedding models
 
@@ -215,9 +212,8 @@ service, alongside whatever's already running:
 cd /opt/llama-service
 git pull
 
-# 2. Re-run init if deploy/llama-server.service or deploy/llama-server@.service
-#    changed (e.g. a new systemd directive) -- safe/idempotent to re-run
-#    even if they didn't
+# 2. Re-run init if deploy/llama-server@.service changed (e.g. a new
+#    systemd directive) -- safe/idempotent to re-run even if it didn't
 ./llama-tool.py init
 
 # 3. Download the model's weights (not in git) -- re-running the same
@@ -228,9 +224,9 @@ git pull
 # 4. Sanity-check the resolved command before starting anything
 ./llama-tool.py run qwen3-embedding-0.6b --dry-run
 
-# 5. Start it as its own auto-restarting service
-sudo systemctl enable --now llama-server@qwen3-embedding-0.6b
-systemctl status llama-server@qwen3-embedding-0.6b
+# 5. Start it as its own auto-restarting service (also arms its daily restart timer)
+./llama-tool.py services enable qwen3-embedding-0.6b --now
+./llama-tool.py services status qwen3-embedding-0.6b
 
 # 6. Verify it's actually serving
 curl -s http://localhost:18085/v1/embeddings \
@@ -305,10 +301,12 @@ docker logs -f llama-server 2>&1 | ./llama-tool.py cache stats -f   # live-follo
 ./llama-tool.py log /path/to/other.log
 ```
 
-`LLAMA_LOG_FILE` defaults to `llama-server.log` in the repo root, matching
-`deploy/llama-server.service`'s `StandardOutput=`/`StandardError=` — if you
-change one, change the other (systemd directives can't reference
-`llama.env`, so they aren't linked automatically).
+`LLAMA_LOG_FILE` defaults to whichever preset `ACTIVE_PRESET` names in
+`llama.env` (`llama-server-<preset>.log`), matching `deploy/llama-server@.service`'s
+`StandardOutput=`/`StandardError=` naming — if you change that pattern,
+change both (systemd directives can't reference `llama.env`, so they aren't
+linked automatically). For a specific instance's log, just pass its path
+directly instead of relying on the default.
 
 ## Installing the systemd service
 
@@ -316,25 +314,22 @@ change one, change the other (systemd directives can't reference
 By hand:
 
 ```bash
-cp ./deploy/llama-server.service  /etc/systemd/system/llama-server.service
 cp ./deploy/llama-server@.service /etc/systemd/system/llama-server@.service
 sudo systemctl daemon-reload
-sudo systemctl enable llama-server
-sudo systemctl start llama-server
-sudo systemctl status llama-server
+sudo systemctl enable --now llama-server@<preset>
+sudo systemctl status llama-server@<preset>
 ```
 
 The unit's `EnvironmentFile=-/opt/llama-service/llama-server.env` loads
 secrets (see "Secrets" above) — that file isn't created by `init`, copy it
 from `deploy/llama-server.env.example` yourself first.
 
-`llama-server.service` always runs `llama-tool.py run` with no arguments, so
-it uses `ACTIVE_PRESET` from `llama.env` — set that to whichever preset
-should run on boot/restart. `llama-server@.service` is a template instead:
-`systemctl enable --now llama-server@<preset>` runs that specific preset as
-its own service (`llama-tool.py run <preset>`), so several can run side by
-side — see "Running several models at once" above. It isn't enabled by
-`init` for any specific preset since that's a per-instance choice.
+`llama-server@.service` is a template: `systemctl enable --now
+llama-server@<preset>` runs that specific preset as its own service
+(`llama-tool.py run <preset>`), so several can run side by side — see
+"Running models as services" above. It isn't enabled by `init` for any
+specific preset since that's a per-host choice; `llama-tool.py services
+enable <preset> --now` is the easier way to do this same thing by name.
 
 ## logrotate
 
@@ -345,47 +340,41 @@ cp ./deploy/llama-server.logrotate /etc/logrotate.d/llama-server
 sudo logrotate -vf /etc/logrotate.d/llama-server
 ```
 
-Covers both `llama-server.log` (the single-instance/`ACTIVE_PRESET` service)
-and `llama-server-*.log` (per-preset logs from the `llama-server@.service`
-template).
+Covers `llama-server-*.log` — the per-preset logs from every
+`llama-server@.service` instance.
 
 ## Periodic restart
 
 `llama-server` (or any long-running inference server) can accumulate
 fragmented/leaked memory over days of uptime. To bound that, `init` also
-installs (but does not enable) a pair of systemd timers that restart the
+installs (but does not enable) a systemd timer per preset that restarts its
 service daily at 03:00, ±5 min randomized delay so it doesn't land on the
 same instant every host:
 
 ```bash
-sudo systemctl enable --now llama-server-restart.timer               # for llama-server.service
 sudo systemctl enable --now llama-server-restart@<preset>.timer      # for llama-server@<preset>.service
-systemctl list-timers 'llama-server-restart*'                        # confirm schedule
+systemctl list-timers 'llama-server-restart@*'                       # confirm schedule
 ```
 
 `llama-tool.py services enable <preset> --now` (see "Debugging / status"
 below) does this pairing for you automatically whenever you enable a
-preset as a service, so you normally don't need the commands above by
-hand — they're here for reference/by-hand setups, or hosts that predate
-that pairing.
+preset as a service, so you normally don't need the command above by
+hand — it's here for reference/by-hand setups.
 
-Each timer triggers a oneshot `systemctl try-restart` — a no-op if that
+The timer triggers a oneshot `systemctl try-restart` — a no-op if that
 service isn't currently running, so it's safe to leave enabled even while
 a service is stopped for maintenance. `Restart=always` on the underlying
-service (see `deploy/llama-server.service`) already brings it back up.
-To change the time, edit `deploy/llama-server-restart.timer`'s (and/or
-`deploy/llama-server-restart@.timer`'s) `OnCalendar=` line, re-run `init`,
-then `sudo systemctl daemon-reload`.
+service (see `deploy/llama-server@.service`) already brings it back up.
+To change the time, edit `deploy/llama-server-restart@.timer`'s
+`OnCalendar=` line, re-run `init`, then `sudo systemctl daemon-reload`.
 
 By hand, without `init`:
 
 ```bash
-sudo cp ./deploy/llama-server-restart.service  /etc/systemd/system/llama-server-restart.service
-sudo cp ./deploy/llama-server-restart.timer    /etc/systemd/system/llama-server-restart.timer
 sudo cp ./deploy/llama-server-restart@.service /etc/systemd/system/llama-server-restart@.service
 sudo cp ./deploy/llama-server-restart@.timer   /etc/systemd/system/llama-server-restart@.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now llama-server-restart.timer
+sudo systemctl enable --now llama-server-restart@<preset>.timer
 ```
 
 ## Memory / GPU report
@@ -425,23 +414,22 @@ systemctl status llama-mem-report
 `llama-tool.py services` is the one place to see and manage every preset's
 systemd lifecycle — no need to remember unit names or glob patterns. `list`
 shows **every preset under `presets/*.env`, running or not** (not just
-what's already loaded), plus the main `ACTIVE_PRESET` slot, any periodic
-restart timers, and `llama-mem-report`, all under one numbered list:
+what's already loaded), plus any periodic restart timers and
+`llama-mem-report`, all under one numbered list:
 
 ```bash
 ./llama-tool.py services list
 # llama-server:
-#   1) llama-server [ACTIVE_PRESET=qwen3.5-9b]  active running   [restart timer: armed]
-#   2) gemma-4b-e4b                             not running      [restart timer: off]
-#   3) qwen3-embedding-0.6b                     active running   [restart timer: off]
-#   4) qwen3.5-9b                               not running      [restart timer: off]
+#   1) gemma-4b-e4b                             not running      [restart timer: off]
+#   2) qwen3-embedding-0.6b                     active running   [restart timer: armed]
+#   3) qwen3.5-9b                               active running   [restart timer: armed]
 #   ...
 #
 # Periodic restart timers:
-#   9) llama-server-restart.timer                active waiting
+#   8) llama-server-restart@qwen3.5-9b.timer    active waiting
 #
 # Memory / GPU report:
-#   10) llama-mem-report.service                 active running
+#   9) llama-mem-report.service                 active running
 ```
 
 Bring a preset up or down as a service — `start`/`stop` act now only (not
@@ -473,20 +461,19 @@ under the hood, so it's read-only — no sudo, no confirmation prompt):
 ```
 
 **`enable`/`disable` also arm/disarm the preset's periodic restart timer**
-(`llama-server-restart[@<preset>].timer`) in the same call — enabling a
+(`llama-server-restart@<preset>.timer`) in the same call — enabling a
 preset for the long haul means its daily memory-clearing restart should be
 running too, and disabling it means that restart shouldn't linger pointed
 at a service that's no longer up. Pass `--no-restart-timer` to manage the
 timer separately instead. `start`/`stop` deliberately don't do this pairing
 — they're one-off actions, not a change to what persists across reboots.
 
-Restart one, several, or (default) every currently-running `llama-server`
-instance:
+Restart one, several, or (default) every currently-running preset instance:
 
 ```bash
-./llama-tool.py services restart              # restart every currently-running llama-server/llama-server@* instance
+./llama-tool.py services restart              # restart every currently-running llama-server@* instance
 ./llama-tool.py services restart 3            # restart just #3 from the list above
-./llama-tool.py services restart 3 9          # restart #3 and #9 (works on timers/mem-report too, by number)
+./llama-tool.py services restart 3 8          # restart #3 and #8 (works on timers/mem-report too, by number)
 ./llama-tool.py services restart qwen3.5-9b   # or by preset/unit name instead of number
 ./llama-tool.py services restart -y           # skip the confirmation prompt
 ./llama-tool.py services restart --dry-run    # preview the systemctl command without running it
@@ -503,21 +490,20 @@ For the raw `systemctl`/`journalctl` commands `services` wraps (useful if
 you want more detail than the numbered list gives you):
 
 ```bash
-systemctl list-units 'llama-server*' --all       # every llama-server unit + state, running or not
-systemctl status 'llama-server@*'                # just the active @-instances, with preset name in each block
-systemctl status llama-server                    # the single ACTIVE_PRESET instance
+systemctl list-units 'llama-server@*' --all      # every preset instance + state, running or not
+systemctl status 'llama-server@*'                # every active instance, with preset name in each block
+systemctl status llama-server@<preset>           # a specific instance
 systemctl status llama-mem-report                 # the memory/GPU report server, if installed
 
-systemctl list-timers 'llama-server-restart*'    # next/last fire time per preset's restart timer
-journalctl -u llama-server-restart.service --since -7d               # did the ACTIVE_PRESET restart actually run?
-journalctl -u llama-server-restart@<preset>.service --since -7d      # same, per-instance
+systemctl list-timers 'llama-server-restart@*'   # next/last fire time per preset's restart timer
+journalctl -u llama-server-restart@<preset>.service --since -7d      # did that preset's restart actually run?
 
-./llama-tool.py log --no-follow -n 100                                # tail LLAMA_LOG_FILE (ACTIVE_PRESET)
+./llama-tool.py log --no-follow -n 100                                # tail LLAMA_LOG_FILE (ACTIVE_PRESET's log)
 ./llama-tool.py log llama-server-<preset>.log --no-follow -n 100      # tail a specific @-instance's log
-journalctl -u llama-server -f                                          # or via journald, if StandardOutput=journal
+journalctl -u llama-server@<preset> -f                                 # or via journald, if StandardOutput=journal
 ```
 
-A `llama-server-restart[@].service` showing `loaded inactive dead` in
+A `llama-server-restart@<preset>.service` showing `loaded inactive dead` in
 `list-units` is expected, not a problem — it's a `Type=oneshot` unit that
 only runs momentarily when its `.timer` fires, then goes back to `dead`
 until the next scheduled restart. The `.timer` itself should show `active
@@ -526,10 +512,35 @@ waiting`; that's what confirms the schedule is armed.
 For live memory/GPU/swap numbers instead of systemd state, see "Memory /
 GPU report" above.
 
+## Migrating off llama-server.service
+
+Older clones of this repo had a second unit, `llama-server.service`, that
+ran whichever preset `ACTIVE_PRESET` named as an anonymous default —
+separate from, and easy to accidentally duplicate alongside, a named
+`llama-server@<preset>.service` instance of the same preset (both reading
+the same `LLAMA_PORT`, so the second one to start just fails to bind and
+crash-loops). That unit is gone — every preset is a named `@`-instance now,
+with no anonymous default. To migrate a host still running the old unit:
+
+```bash
+sudo systemctl disable --now llama-server        # stop the old anonymous instance
+./llama-tool.py services enable <preset> --now   # bring the same preset up under its own name
+git pull                                          # picks up this repo's removal of the old deploy/ files
+./llama-tool.py init                              # re-run to pick up any @.service template changes
+```
+
+Then remove the stale unit file `init` will point out:
+```bash
+sudo rm /etc/systemd/system/llama-server.service
+sudo rm /etc/systemd/system/llama-server-restart.service
+sudo rm /etc/systemd/system/llama-server-restart.timer
+sudo systemctl daemon-reload
+```
+
 ## Vulkan / render group access
 
 ```bash
-sudo usermod -aG render <your-username>   # the User= from deploy/llama-server.service
+sudo usermod -aG render <your-username>   # the User= from deploy/llama-server@.service
 getent group render
 
 groups
