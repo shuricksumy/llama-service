@@ -24,10 +24,38 @@ or preset name); with no selector it restarts every *currently running*
 llama-server@* instance (not timers or mem-report -- select those
 explicitly by number/name if that's what you want restarted).
 """
+import os
 import subprocess
+import sys
 
 from ._common import die, warn
 from ._env import list_presets
+
+_RED = "\033[31m"
+_YELLOW = "\033[33m"
+_GREEN = "\033[32m"
+_RESET = "\033[0m"
+
+
+def _color_enabled():
+    """Disabled when not a real terminal (piped/redirected) or when NO_COLOR
+    is set (https://no-color.org) -- never inject escape codes into logs."""
+    return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _state_color(active, sub, loaded):
+    """None = don't color it (a normal/expected state, not a problem)."""
+    if not loaded:
+        return None  # never started -- that's just "off", not broken
+    if active == "failed" or sub == "failed":
+        return _RED
+    if active == "activating" and "auto-restart" in sub:
+        return _RED  # crash-looping
+    if active in ("activating", "deactivating"):
+        return _YELLOW  # mid-transition -- not necessarily broken, worth a look
+    if active == "active":
+        return _GREEN
+    return None
 
 CORE_PATTERNS = ["llama-server@*.service"]
 TIMER_PATTERNS = ["llama-server-restart@*.service", "llama-server-restart@*.timer"]
@@ -120,6 +148,7 @@ def _print_catalog(catalog):
         ("Periodic restart timers", [e for e in catalog if e["category"] == 1]),
         ("Memory / GPU report", [e for e in catalog if e["category"] == 2]),
     ]
+    colorize = _color_enabled()
     i = 1
     first = True
     for title, entries in sections:
@@ -131,8 +160,13 @@ def _print_catalog(catalog):
         print(f"{title}:")
         for e in entries:
             state = f"{e['active']} {e['sub']}" if e["loaded"] else "not running"
+            padded = f"{state:<15}"
+            if colorize:
+                color = _state_color(e["active"], e["sub"], e["loaded"])
+                if color:
+                    padded = f"{color}{padded}{_RESET}"
             extra = f"  [{e['timer_note']}]" if e["timer_note"] else ""
-            print(f"  {i}) {e['label']:<{width}}  {state:<15}{extra}")
+            print(f"  {i}) {e['label']:<{width}}  {padded}{extra}")
             i += 1
     if not any(e["loaded"] for e in catalog):
         print()
