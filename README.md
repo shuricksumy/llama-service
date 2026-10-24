@@ -145,6 +145,24 @@ before). To add a model, copy an existing preset and change `LLAMA_MODEL` /
 automatically in `run --list`. The first `#` comment line in the file is
 used as its description.
 
+Every variable resolves with the same precedence, highest first: an
+already-set environment variable (the CLI, or systemd's `EnvironmentFile=`),
+then the preset, then `llama.env`'s shared defaults. So to change a shared
+setting for one model, just set it in that preset with the usual idiom.
+Example: an MTP model with q8_0 KV cache and the model card's sampling
+defaults:
+
+```bash
+: "${LLAMA_CACHE_TYPE_K:=q8_0}"
+: "${LLAMA_CACHE_TYPE_V:=q8_0}"
+: "${LLAMA_SPEC_TYPE:=draft-mtp}"       # use the model's built-in MTP heads
+: "${LLAMA_SPEC_DRAFT_N_MAX:=3}"
+: "${LLAMA_TEMP:=0.6}"                  # server-side defaults; a client's
+: "${LLAMA_TOP_K:=20}"                  # own sampling params still win
+```
+
+See `llama.env` for every available variable and its range.
+
 Several presets for the same base model (different quant/source) are kept
 side by side on different ports (e.g. `qwen3.5-9b` vs `qwen3.5-9b-lmstudio`)
 so you can run two at once and compare them directly instead of

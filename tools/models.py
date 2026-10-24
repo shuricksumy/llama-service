@@ -121,16 +121,14 @@ def write_preset(name, repo, file, file_sha, mmproj, mmproj_sha, port, embedding
     if embedding:
         # --pooling last: Qwen3-Embedding (and most decoder-only embedding
         # models) pool the final token's hidden state, not mean/cls.
-        # LLAMA_BATCH_SIZE/LLAMA_UBATCH_SIZE are plain (non-":=") assignments
-        # in llama.env, sourced before this preset, so a ":=" here would be a
-        # silent no-op -- these must be plain assignments to actually win.
-        # Raised together (ubatch <= batch) so a whole document embeds in one
-        # pass instead of being split (see model card's example invocation).
+        # LLAMA_BATCH_SIZE/LLAMA_UBATCH_SIZE raised together (ubatch <= batch)
+        # so a whole document embeds in one pass instead of being split (see
+        # model card's example invocation).
         # No LLAMA_REASONING -- that flag is chat-template-only.
         lines.append(': "${LLAMA_EMBEDDING:=true}"')
         lines.append(': "${LLAMA_POOLING:=last}"')
-        lines.append('LLAMA_BATCH_SIZE="8192"')
-        lines.append('LLAMA_UBATCH_SIZE="8192"')
+        lines.append(': "${LLAMA_BATCH_SIZE:=8192}"')
+        lines.append(': "${LLAMA_UBATCH_SIZE:=8192}"')
     else:
         lines.append(': "${LLAMA_REASONING:=off}"')
 

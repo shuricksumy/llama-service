@@ -8,6 +8,7 @@ environment and shows up in `env`'s output, including values inherited
 from our own environment (so `LLAMA_CTX_SIZE=16384 ./llama-tool.py run ...`
 still overrides a preset's default, exactly as it does for run-llama.sh).
 """
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -36,16 +37,21 @@ def list_presets():
 
 
 def resolve_env(preset: Optional[str] = None) -> dict:
-    commands = ["source llama.env"]
+    # llama.env sources the preset itself (via LLAMA_PRESET_FILE), between
+    # its base paths and its defaults -- see llama.env's PRESET section for
+    # why that position, not "after llama.env", gives preset > llama.env.
+    env_in = dict(os.environ)
+    env_in.pop("LLAMA_PRESET_FILE", None)
     if preset is not None:
         pfile = preset_path(preset)
         if not pfile.is_file():
             die(f"unknown preset '{preset}' (no {pfile.relative_to(REPO_ROOT)})")
-        commands.append(f"source presets/{preset}.env")
-    script = "set -a\n" + "\n".join(commands) + "\nset +a\nenv"
+        env_in["LLAMA_PRESET_FILE"] = str(pfile)
+    script = "set -a\nsource llama.env\nset +a\nenv"
 
     proc = subprocess.run(
-        ["bash", "-c", script], cwd=REPO_ROOT, capture_output=True, text=True,
+        ["bash", "-c", script], cwd=REPO_ROOT, env=env_in,
+        capture_output=True, text=True,
     )
     if proc.returncode != 0:
         die(f"failed to resolve config:\n{proc.stderr}")
