@@ -1,0 +1,28 @@
+[Unit]
+Description=Memory watchdog for llama-server@ instances (see llama-tool.py memwatch)
+After=network.target
+
+[Service]
+Type=oneshot
+
+# Must be the SAME user/group as deploy/llama-server@.service: a restart is a
+# SIGTERM to the instance's main PID (its Restart=always brings it back), so
+# no root/sudo is needed -- only permission to signal that process. Edit to
+# match llama-server@.service if you changed it there.
+User=1000
+Group=1000
+
+# Set the working directory -- must match wherever you cloned this repo.
+WorkingDirectory=/opt/llama-service
+
+# Same secrets file as llama-server@.service -- needed to query each
+# instance's /slots endpoint when LLAMA_API_KEY is set.
+EnvironmentFile=-/opt/llama-service/llama-server.env
+
+# Holds how long each instance has been over its soft limit while busy.
+# Preserve=yes: a oneshot's RuntimeDirectory is otherwise removed every time
+# it exits, i.e. every minute, losing that state.
+RuntimeDirectory=llama-memwatch
+RuntimeDirectoryPreserve=yes
+
+ExecStart=/opt/llama-service/llama-tool.py memwatch check

@@ -2,13 +2,15 @@
 systemd lifecycle: `llama-server@<preset>.service` for each preset under
 `presets/*.env` (whether or not it's currently running -- every preset runs
 as its own named service, there's no anonymous default instance), the
-paired `llama-server-restart@` periodic-restart timers, and
-`llama-mem-report.service`.
+paired `llama-server-restart@` periodic-restart timers,
+`llama-mem-report.service`, and the `llama-memwatch.timer` memory watchdog
+(see `llama-tool.py memwatch`).
 
 `list`/`status` need no privileges; every other subcommand shells out to
 `sudo systemctl <verb>`. `start`/`stop`/`enable`/`disable`/`status` take
 target(s) -- a number from the last `list`, a preset name (-> `llama-server@
-<preset>.service`), `llama-mem-report`, or a full unit name -- and (except
+<preset>.service`), `llama-mem-report`, `llama-memwatch` (-> its timer), or
+a full unit name -- and (except
 `status`) work even if that unit has never been loaded yet, which is how a
 brand new preset gets turned into a running service for the first time.
 
@@ -60,10 +62,14 @@ def _state_color(active, sub, loaded):
 CORE_PATTERNS = ["llama-server@*.service"]
 TIMER_PATTERNS = ["llama-server-restart@*.service", "llama-server-restart@*.timer"]
 REPORT_PATTERNS = ["llama-mem-report.service"]
-ALL_PATTERNS = CORE_PATTERNS + TIMER_PATTERNS + REPORT_PATTERNS
+MEMWATCH_PATTERNS = ["llama-memwatch.service", "llama-memwatch.timer"]
+ALL_PATTERNS = CORE_PATTERNS + TIMER_PATTERNS + REPORT_PATTERNS + MEMWATCH_PATTERNS
 
 SPECIAL_UNITS = {
     "llama-mem-report": "llama-mem-report.service",
+    # The timer, not the oneshot service -- enabling/starting the timer is
+    # what arms the watchdog.
+    "llama-memwatch": "llama-memwatch.timer",
 }
 
 
@@ -107,9 +113,9 @@ def _paired_timer(unit):
 def _build_catalog():
     """Ordered list of every unit this repo cares about, whether or not
     it's currently loaded: one row per preset in presets/*.env, then loaded
-    restart timers, then a loaded mem-report. Each entry: unit, label,
-    category (0=llama-server, 1=timer, 2=report), loaded, active, sub,
-    timer_note (category 0 only).
+    restart timers, then a loaded mem-report, then the loaded memory
+    watchdog. Each entry: unit, label, category (0=llama-server, 1=timer,
+    2=report, 3=memwatch), loaded, active, sub, timer_note (category 0 only).
     """
     loaded = _systemctl_loaded(ALL_PATTERNS)
     catalog = []
@@ -138,6 +144,9 @@ def _build_catalog():
     for unit in sorted(u for u in loaded if u.startswith("llama-mem-report")):
         add(unit, unit, 2)
 
+    for unit in sorted(u for u in loaded if u.startswith("llama-memwatch")):
+        add(unit, unit, 3)
+
     return catalog
 
 
@@ -147,6 +156,7 @@ def _print_catalog(catalog):
         ("llama-server", [e for e in catalog if e["category"] == 0]),
         ("Periodic restart timers", [e for e in catalog if e["category"] == 1]),
         ("Memory / GPU report", [e for e in catalog if e["category"] == 2]),
+        ("Memory watchdog", [e for e in catalog if e["category"] == 3]),
     ]
     colorize = _color_enabled()
     i = 1
@@ -399,8 +409,9 @@ def add_arguments(parser):
     def _target_arg(p):
         p.add_argument(
             "target",
-            help="Number from `services list`, preset name (-> llama-server@<preset>.service), or a full "
-                 "unit name (llama-mem-report, llama-server-restart@<preset>.timer, ...).",
+            help="Number from `services list`, preset name (-> llama-server@<preset>.service), "
+                 "llama-mem-report, llama-memwatch (-> llama-memwatch.timer), or a full unit name "
+                 "(llama-server-restart@<preset>.timer, ...).",
         )
 
     p_start = sub.add_parser("start", help="Start a unit now (not persisted across reboot -- see 'enable' for that)")

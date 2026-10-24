@@ -1,8 +1,9 @@
 """llama-tool.py init -- one-time host setup after cloning this repo.
 
 Installs the systemd units (the llama-server@.service template for running
-presets as named services, and the llama-server-restart@.timer/.service
-pair for periodic memory-clearing restarts) and logrotate config (from
+presets as named services, the llama-server-restart@.timer/.service pair
+for periodic memory-clearing restarts, and the llama-memwatch.timer/.service
+memory watchdog) and logrotate config (from
 deploy/) via sudo. Does NOT start or enable any service -- there's no
 "default" service anymore (every preset runs as its own named
 llama-server@<preset> instance; see `llama-tool.py services enable
@@ -22,10 +23,14 @@ TEMPLATE_SRC = DEPLOY_DIR / "llama-server@.service"
 LOGROTATE_SRC = DEPLOY_DIR / "llama-server.logrotate"
 RESTART_TEMPLATE_SERVICE_SRC = DEPLOY_DIR / "llama-server-restart@.service"
 RESTART_TEMPLATE_TIMER_SRC = DEPLOY_DIR / "llama-server-restart@.timer"
+MEMWATCH_SERVICE_SRC = DEPLOY_DIR / "llama-memwatch.service"
+MEMWATCH_TIMER_SRC = DEPLOY_DIR / "llama-memwatch.timer"
 TEMPLATE_DEST = "/etc/systemd/system/llama-server@.service"
 LOGROTATE_DEST = "/etc/logrotate.d/llama-server"
 RESTART_TEMPLATE_SERVICE_DEST = "/etc/systemd/system/llama-server-restart@.service"
 RESTART_TEMPLATE_TIMER_DEST = "/etc/systemd/system/llama-server-restart@.timer"
+MEMWATCH_SERVICE_DEST = "/etc/systemd/system/llama-memwatch.service"
+MEMWATCH_TIMER_DEST = "/etc/systemd/system/llama-memwatch.timer"
 
 # Units an older clone of this repo may have installed that no longer exist
 # here -- init offers to remove them (see "Migrating off llama-server.service"
@@ -47,17 +52,17 @@ def _run(cmd, dry_run):
 
 
 def run(args):
-    required = [TEMPLATE_SRC, LOGROTATE_SRC, RESTART_TEMPLATE_SERVICE_SRC, RESTART_TEMPLATE_TIMER_SRC]
-    for src in required:
-        if not src.is_file():
-            die(f"missing {src.relative_to(REPO_ROOT)}")
-
     installs = [
         (TEMPLATE_SRC, TEMPLATE_DEST),
         (LOGROTATE_SRC, LOGROTATE_DEST),
         (RESTART_TEMPLATE_SERVICE_SRC, RESTART_TEMPLATE_SERVICE_DEST),
         (RESTART_TEMPLATE_TIMER_SRC, RESTART_TEMPLATE_TIMER_DEST),
+        (MEMWATCH_SERVICE_SRC, MEMWATCH_SERVICE_DEST),
+        (MEMWATCH_TIMER_SRC, MEMWATCH_TIMER_DEST),
     ]
+    for src, _dest in installs:
+        if not src.is_file():
+            die(f"missing {src.relative_to(REPO_ROOT)}")
 
     stale = [dest for dest in RETIRED_UNIT_DESTS if os.path.exists(dest)]
 
@@ -85,6 +90,9 @@ def run(args):
     print("It will NOT touch user/group membership (see README.md for")
     print("Vulkan/render group setup). The periodic-restart timer is")
     print("installed but left disabled -- opt in per-preset (see 'Next' below).")
+    print("The memory watchdog timer is installed but left disabled too --")
+    print("set LLAMA_MEMWATCH_SOFT_MB/HARD_MB (llama.env or a preset), then")
+    print("`./llama-tool.py services enable llama-memwatch --now`.")
     print()
 
     if not args.dry_run and not args.yes:

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the llama-server memory watchdog every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+# The default AccuracySec (1min) would let systemd coalesce this into
+# anything up to a 2-minute period.
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

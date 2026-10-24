@@ -33,7 +33,9 @@ numeric id here) and `WorkingDirectory=/opt/llama-service`. Edit both to
 match your actual user and wherever you cloned this repo *before* running
 `init`, since it copies the file as-is into `/etc/systemd/system/`.
 `deploy/llama-server.logrotate` has the same working-directory path and
-needs the same edit if you didn't clone to `/opt/llama-service`.
+needs the same edit if you didn't clone to `/opt/llama-service`, and
+`deploy/llama-memwatch.service` needs the same `User=`/`Group=`/path edits
+(see "Memory watchdog").
 
 `init` copies `deploy/llama-server@.service` (the template every preset
 runs as — see "Running models as services"), `deploy/llama-server.logrotate`,
@@ -394,6 +396,44 @@ sudo cp ./deploy/llama-server-restart@.timer   /etc/systemd/system/llama-server-
 sudo systemctl daemon-reload
 sudo systemctl enable --now llama-server-restart@<preset>.timer
 ```
+
+## Memory watchdog
+
+The daily restart doesn't help if an instance's memory grows past what the
+host can hold during the day. `llama-memwatch.timer` (installed by `init`,
+not enabled) runs `llama-tool.py memwatch check` every minute. It checks
+each running instance against that preset's limits and restarts the
+instance if it's over:
+
+- `LLAMA_MEMWATCH_SOFT_MB`: restart **once every slot is idle**
+  (`GET /slots`, so an in-flight request isn't cut off), or after
+  `LLAMA_MEMWATCH_GRACE_MIN` (default 15) minutes of staying busy.
+- `LLAMA_MEMWATCH_HARD_MB`: restart immediately, busy or not.
+
+Limits are per preset only (defaults in `llama.env`, empty = off). There's
+no host-wide limit, so keep the sum of the limits of the presets you run
+together below the host's RAM. The number compared is the instance's
+*anonymous* memory (KV/prompt cache, buffers). The page-cached model file
+isn't counted, because it isn't growth. Instances that started less than
+5 minutes ago are skipped, so a limit set below an instance's baseline
+can't cause a restart loop.
+
+```bash
+./llama-tool.py memwatch status          # each instance's ANON vs. its limits -- pick values from this
+$EDITOR presets/<preset>.env             # e.g. : "${LLAMA_MEMWATCH_SOFT_MB:=12000}" / HARD_MB:=14000
+./llama-tool.py memwatch check --dry-run # what would be restarted right now
+$EDITOR deploy/llama-memwatch.service    # User=/Group=/WorkingDirectory= -- same as llama-server@.service
+./llama-tool.py init                     # if the units weren't installed yet
+./llama-tool.py services enable llama-memwatch --now
+journalctl -u llama-memwatch             # every restart decision, with the reason
+```
+
+A restart is a SIGTERM to the instance's process. llama-server shuts down
+cleanly and the unit's `Restart=always` brings it back, so the watchdog
+runs as the same unprivileged user as llama-server rather than as root.
+That's why its `User=`/`Group=` must match `deploy/llama-server@.service`.
+A restart still drops every slot's warm prompt cache, so each agent's next
+request starts cold.
 
 ## Memory / GPU report
 

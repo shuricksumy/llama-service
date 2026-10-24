@@ -8,6 +8,7 @@
   cache     Verify/analyze prompt-cache reuse (live check + log stats)
   log       Tail the llama-server log (defaults to LLAMA_LOG_FILE)
   services  List/restart the llama-server systemd unit(s)
+  memwatch  Per-preset memory watchdog (restart an instance over its limit)
 
 Run `llama-tool.py <command> --help` for a command's full options.
 Stdlib only -- no pip install, no venv needed.
@@ -27,6 +28,7 @@ from tools import cache as cache_mod
 from tools import engine as engine_mod
 from tools import init as init_mod
 from tools import log as log_mod
+from tools import memwatch as memwatch_mod
 from tools import models as models_mod
 from tools import run as run_mod
 from tools import services as services_mod
@@ -61,6 +63,9 @@ def main():
     p_services = sub.add_parser("services", help="List/restart the llama-server systemd unit(s)")
     services_mod.add_arguments(p_services)
 
+    p_memwatch = sub.add_parser("memwatch", help="Per-preset memory watchdog (restart an instance over its limit)")
+    memwatch_mod.add_arguments(p_memwatch)
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -77,6 +82,8 @@ def main():
         log_mod.run(args)
     elif args.command == "services":
         services_mod.run(args)
+    elif args.command == "memwatch":
+        memwatch_mod.run(args)
 
 
 if __name__ == "__main__":
