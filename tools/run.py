@@ -45,7 +45,10 @@ ARG_SPEC = [
     ("bool", "LLAMA_LOG_DISABLE", "--log-disable"),
     ("bool", "LLAMA_KV_OFFLOAD", "--kv-offload"),
     ("bool", "LLAMA_KV_UNIFIED", "--kv-unified"),
-    ("bool", "LLAMA_NO_DIRECT_IO", "--no-direct-io"),
+    # Was ("bool", "LLAMA_NO_DIRECT_IO", "--no-direct-io") -- llama.cpp
+    # deprecated that (and --mmap/--no-mmap) for --load-mode and removed it
+    # by b11669, where passing it is a startup error. Same position in argv.
+    ("value", "LLAMA_LOAD_MODE", "--load-mode"),
     ("bool", "LLAMA_METRICS", "--metrics"),
     ("value", "LLAMA_CHAT_TEMPLATE_KWARGS", "--chat-template-kwargs"),
     ("value", "LLAMA_CACHE_REUSE", "--cache-reuse"),
