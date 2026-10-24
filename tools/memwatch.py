@@ -3,17 +3,23 @@
 `check` is what deploy/llama-memwatch.timer runs every minute: for every
 active llama-server@<preset>.service whose preset sets a limit
 (LLAMA_MEMWATCH_SOFT_MB / LLAMA_MEMWATCH_HARD_MB, see llama.env), it reads
-the instance's anonymous memory from its cgroup and restarts it if it's
-over:
+the instance's system-RAM footprint -- RAM = cgroup anon + GPU GTT (see
+below) -- and restarts it if it's over:
 
   hard  restart immediately.
   soft  restart only once every slot is idle (GET /slots, is_processing),
         so an in-flight request isn't cut off -- or after
         LLAMA_MEMWATCH_GRACE_MIN minutes of staying busy, whichever's first.
 
-Memory is the cgroup's `anon` (memory.stat), not memory.current: the
-latter includes the page-cached model file, which isn't growth and would
-trip the limit on load. Limits are per preset only -- no host-wide total,
+RAM is the cgroup's `anon` (memory.stat) plus the process's resident GTT
+from amdgpu's per-client DRM fdinfo (/proc/<pid>/fdinfo, deduplicated by
+drm-client-id). anon, not memory.current: the latter includes the
+page-cached model file, which isn't growth and would trip the limit on
+load. GTT because GPU buffers in GTT are system RAM but aren't charged to
+the cgroup -- on an iGPU/APU that's where the weights, KV cache and compute
+buffers live, i.e. most of the instance's footprint. VRAM isn't counted
+(dedicated GPU memory, not system RAM); drivers without DRM fdinfo (e.g.
+NVIDIA's proprietary one) just report no GTT. Limits are per preset only -- no host-wide total,
 since a per-instance breach always says which instance to restart (and the
 sum of every preset's limit bounds the host).
 
@@ -90,6 +96,61 @@ def _cgroup_memory(control_group):
         return int(stat["anon"]), int(stat.get("file", 0))
     except (KeyError, ValueError):
         return None
+
+
+def _gpu_memory(pid):
+    """(gtt, vram) resident bytes across the process's DRM clients, from
+    /proc/<pid>/fdinfo. Every fd onto the same client repeats the same
+    numbers, so dedupe by (drm-pdev, drm-client-id). (0, 0) if the process
+    has no DRM fds or the driver doesn't report per-client memory."""
+    clients = {}
+    try:
+        fds = list(Path(f"/proc/{pid}/fdinfo").iterdir())
+    except OSError:
+        return 0, 0
+    for fd in fds:
+        try:
+            text = fd.read_text()
+        except OSError:
+            continue
+        if "drm-driver:" not in text:
+            continue
+        info = {}
+        for line in text.splitlines():
+            key, _, value = line.partition(":")
+            info[key.strip()] = value.strip()
+        key = (info.get("drm-pdev"), info.get("drm-client-id"))
+        if key[1] is None or key in clients:
+            continue
+
+        def kib(*names):
+            # drm-resident-<region> is the current name; drm-memory-<region>
+            # the older (pre-6.x kernels) one for the same number.
+            for name in names:
+                value = info.get(name, "")
+                if value.endswith(" KiB"):
+                    try:
+                        return int(value[:-4]) * 1024
+                    except ValueError:
+                        pass
+            return 0
+
+        clients[key] = (
+            kib("drm-resident-gtt", "drm-memory-gtt"),
+            kib("drm-resident-vram", "drm-memory-vram"),
+        )
+    return sum(c[0] for c in clients.values()), sum(c[1] for c in clients.values())
+
+
+def _measure(props):
+    """{ram, anon, file, gtt, vram} bytes, or None if the cgroup's
+    memory.stat can't be read."""
+    mem = _cgroup_memory(props.get("ControlGroup", ""))
+    if mem is None:
+        return None
+    anon, file = mem
+    gtt, vram = _gpu_memory(int(props.get("MainPID", "0") or 0))
+    return {"ram": anon + gtt, "anon": anon, "file": file, "gtt": gtt, "vram": vram}
 
 
 def _slots_busy(env):
@@ -199,14 +260,15 @@ def cmd_check(args):
         if soft is None and hard is None:
             continue
 
-        mem = _cgroup_memory(props.get("ControlGroup", ""))
-        if mem is None:
+        m = _measure(props)
+        if m is None:
             warn(f"{preset}: can't read memory.stat for {unit} (needs cgroup v2) -- skipping")
             continue
-        anon, _file = mem
+        ram = m["ram"]
+        what = f"ram {human_size(ram)} (anon {human_size(m['anon'])} + gtt {human_size(m['gtt'])})"
 
-        over_hard = hard is not None and anon >= hard
-        over_soft = soft is not None and anon >= soft
+        over_hard = hard is not None and ram >= hard
+        over_soft = soft is not None and ram >= soft
         if not (over_hard or over_soft):
             _clear_pending(preset, args.dry_run)
             continue
@@ -216,14 +278,14 @@ def cmd_check(args):
             limit = hard if over_hard else soft
             _log(
                 preset,
-                f"anon {human_size(anon)} >= {'hard' if over_hard else 'soft'} {human_size(limit)}, "
+                f"{what} >= {'hard' if over_hard else 'soft'} {human_size(limit)}, "
                 f"but it started only {uptime:.0f}s ago -- skipping (is the limit below its baseline? "
                 f"see `llama-tool.py memwatch status`)",
             )
             continue
 
         if over_hard:
-            _restart(preset, props, f"anon {human_size(anon)} >= hard {human_size(hard)}", args.dry_run)
+            _restart(preset, props, f"{what} >= hard {human_size(hard)}", args.dry_run)
             continue
 
         grace_min = env.get("LLAMA_MEMWATCH_GRACE_MIN", "") or "0"
@@ -234,7 +296,7 @@ def cmd_check(args):
             grace_sec = 0
 
         busy = _slots_busy(env)
-        base = f"anon {human_size(anon)} >= soft {human_size(soft)}"
+        base = f"{what} >= soft {human_size(soft)}"
         if busy is False:
             _restart(preset, props, f"{base}, all slots idle", args.dry_run)
             continue
@@ -257,19 +319,18 @@ def cmd_status(args):
         print("No llama-server@* instances are running.")
         return
 
-    rows = [("PRESET", "UPTIME", "ANON", "FILE", "SOFT", "HARD", "SLOTS", "PENDING")]
+    rows = [("PRESET", "UPTIME", "RAM", "ANON", "GTT", "VRAM", "FILE", "SOFT", "HARD", "SLOTS", "PENDING")]
     for preset, unit, env, props in instances:
         soft = _parse_mb(env, "LLAMA_MEMWATCH_SOFT_MB", preset)
         hard = _parse_mb(env, "LLAMA_MEMWATCH_HARD_MB", preset)
-        mem = _cgroup_memory(props.get("ControlGroup", ""))
+        m = _measure(props)
         uptime = _uptime_sec(props)
         busy = _slots_busy(env)
         since = _read_pending(preset)
         rows.append((
             preset,
             f"{uptime / 60:.0f}min" if uptime is not None else "?",
-            human_size(mem[0]) if mem else "?",
-            human_size(mem[1]) if mem else "?",
+            *((human_size(m[k]) for k in ("ram", "anon", "gtt", "vram", "file")) if m else ("?",) * 5),
             human_size(soft) if soft is not None else "-",
             human_size(hard) if hard is not None else "-",
             {True: "busy", False: "idle", None: "?"}[busy],
@@ -281,7 +342,9 @@ def cmd_status(args):
         print("  ".join(cell.ljust(w) for cell, w in zip(r, widths)).rstrip())
 
     print()
-    print("ANON is what the limits compare against; FILE is page cache (mostly the model file, not growth).")
+    print("RAM = ANON + GTT is what the limits compare against. GTT is GPU memory in system RAM")
+    print("(on an iGPU: weights + KV + compute buffers); VRAM (dedicated GPU memory) and FILE")
+    print("(page cache, mostly the model file) aren't counted.")
     active = subprocess.run(
         ["systemctl", "is-active", TIMER_UNIT], capture_output=True, text=True,
     ).stdout.strip()

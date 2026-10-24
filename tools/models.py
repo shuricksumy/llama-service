@@ -95,6 +95,33 @@ def download_file(repo: str, filename: str, dest: Path, expected_sha: str, force
     print(f"Saved -> {dest.relative_to(REPO_ROOT)}")
 
 
+# Appended to every generated preset, so per-model watchdog sizing is
+# documented right where the limits get set (same block as the hand-written
+# presets carry).
+MEMWATCH_HINT = [
+    "# Memory watchdog (llama-tool.py memwatch) -- commented/empty = no limit.",
+    "# Limits compare against this instance's system-RAM footprint:",
+    "#   RAM = anon (host-side heap) + GTT (GPU buffers placed in system RAM)",
+    "# `llama-tool.py memwatch status` shows both. Rough steady-state estimate:",
+    "#   anon ~= base (~0.3-0.6 GB) + LLAMA_CACHE_RAM (prompt cache, fills up",
+    "#           to that cap over time; stays near 0 for embedding models)",
+    "#   GTT  -- iGPU/APU (shared memory, e.g. AMD Radeon 680M/Barcelo): nearly",
+    "#           everything offloaded lands here:",
+    "#             weights   ~= .gguf size (+ mmproj .gguf) -- quantisation sets",
+    "#                          this: F16 2, Q8_0 ~1.06, Q4_K_M ~0.6 bytes/param",
+    "#             KV cache  ~= 2 x layers x kv_heads x head_dim x LLAMA_CTX_SIZE",
+    "#                          x bytes/elem (LLAMA_CACHE_TYPE_K/V: f16 2,",
+    "#                          q8_0 ~1.06, q4_0 ~0.56)",
+    "#             compute   grows with LLAMA_UBATCH_SIZE (GBs at 8192)",
+    "#        -- discrete GPU: small; weights/KV sit in VRAM, which isn't",
+    "#           counted (it isn't system RAM). Weights or KV kept on CPU",
+    "#           (LLAMA_N_GPU_LAYERS < layers, LLAMA_KV_OFFLOAD=false) count as",
+    "#           page cache (not counted) / anon respectively.",
+    "# Rule of thumb: SOFT ~= estimate x 1.2, HARD ~= SOFT + 1.5 GB. Then check",
+    "# `memwatch status` after a day of real traffic and adjust.",
+]
+
+
 def write_preset(name, repo, file, file_sha, mmproj, mmproj_sha, port, embedding=False) -> Path:
     PRESETS_DIR.mkdir(parents=True, exist_ok=True)
     preset_file = PRESETS_DIR / f"{name}.env"
@@ -131,6 +158,11 @@ def write_preset(name, repo, file, file_sha, mmproj, mmproj_sha, port, embedding
         lines.append(': "${LLAMA_UBATCH_SIZE:=8192}"')
     else:
         lines.append(': "${LLAMA_REASONING:=off}"')
+
+    lines.append("")
+    lines += MEMWATCH_HINT
+    lines.append('# : "${LLAMA_MEMWATCH_SOFT_MB:=}"')
+    lines.append('# : "${LLAMA_MEMWATCH_HARD_MB:=}"')
 
     preset_file.write_text("\n".join(lines) + "\n")
     print(f"Wrote {preset_file.relative_to(REPO_ROOT)}")

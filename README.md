@@ -413,13 +413,24 @@ instance if it's over:
 Limits are per preset only (defaults in `llama.env`, empty = off). There's
 no host-wide limit, so keep the sum of the limits of the presets you run
 together below the host's RAM. The number compared is the instance's
-*anonymous* memory (KV/prompt cache, buffers). The page-cached model file
-isn't counted, because it isn't growth. Instances that started less than
-5 minutes ago are skipped, so a limit set below an instance's baseline
-can't cause a restart loop.
+system-RAM footprint: **RAM = anon + GTT**.
+
+- `anon` is the host-side heap from the instance's cgroup, including the
+  prompt cache (up to `LLAMA_CACHE_RAM`).
+- `GTT` is GPU buffers placed in system RAM, read per process from
+  amdgpu's DRM fdinfo. On an iGPU/APU that's where the weights, KV cache
+  and compute buffers live, so it's most of the footprint.
+- Not counted: dedicated VRAM, which isn't system RAM, and the page-cached
+  model file, which isn't growth. Drivers without DRM fdinfo, such as
+  NVIDIA's proprietary one, report no GTT, so only `anon` is compared.
+
+Every preset carries a comment block on how to estimate these numbers from
+quantisation, context size, KV cache type and batch size. Instances that
+started less than 5 minutes ago are skipped, so a limit set below an
+instance's baseline can't cause a restart loop.
 
 ```bash
-./llama-tool.py memwatch status          # each instance's ANON vs. its limits -- pick values from this
+./llama-tool.py memwatch status          # each instance's RAM (anon + GTT) vs. its limits -- pick values from this
 $EDITOR presets/<preset>.env             # e.g. : "${LLAMA_MEMWATCH_SOFT_MB:=12000}" / HARD_MB:=14000
 ./llama-tool.py memwatch check --dry-run # what would be restarted right now
 $EDITOR deploy/llama-memwatch.service    # User=/Group=/WorkingDirectory= -- same as llama-server@.service
