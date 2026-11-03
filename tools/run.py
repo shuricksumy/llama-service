@@ -67,6 +67,19 @@ ARG_SPEC = [
     ("value", "LLAMA_MIN_P", "--min-p"),
     ("value", "LLAMA_PRESENCE_PENALTY", "--presence-penalty"),
     ("value", "LLAMA_REPEAT_PENALTY", "--repeat-penalty"),
+    # MoE offload, threading, memory-fit, context checkpoints, reasoning and
+    # idle sleep -- appended last for the same reason; all empty by default.
+    # --n-cpu-moe was one of run-llama.sh's commented-out flags; it's passed
+    # now, at the end rather than in its old position, so argv stays the same.
+    ("value", "LLAMA_N_CPU_MOE", "--n-cpu-moe"),
+    ("value", "LLAMA_THREADS_BATCH", "--threads-batch"),
+    ("value", "LLAMA_FIT", "--fit"),
+    ("value", "LLAMA_CTX_CHECKPOINTS", "--ctx-checkpoints"),
+    ("value", "LLAMA_CHECKPOINT_MIN_STEP", "--checkpoint-min-step"),
+    ("value", "LLAMA_REASONING_FORMAT", "--reasoning-format"),
+    ("value", "LLAMA_REASONING_EFFORT", "--reasoning-effort"),
+    ("value", "LLAMA_REASONING_BUDGET", "--reasoning-budget"),
+    ("value", "LLAMA_SLEEP_IDLE_SECONDS", "--sleep-idle-seconds"),
 ]
 
 
