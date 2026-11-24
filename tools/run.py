@@ -55,7 +55,9 @@ ARG_SPEC = [
     ("value", "LLAMA_CACHE_RAM", "--cache-ram"),
     ("bool", "LLAMA_CACHE_PROMPT", "--cache-prompt"),
     ("value", "LLAMA_SLOT_SAVE_PATH", "--slot-save-path"),
-    ("value", "LLAMA_DEFRAG_THOLD", "--defrag-thold"),
+    # ("value", "LLAMA_DEFRAG_THOLD", "--defrag-thold") was here -- removed:
+    # llama.cpp deprecated it and dropped it in b12359+ (#30565), where it's
+    # a startup error. There's no replacement flag.
     # Speculative decoding (e.g. MTP) and server-side sampling defaults -- not
     # part of run-llama.sh's original ARG_SPEC, appended last so existing
     # presets' argv is unchanged; all no-ops unless a preset sets them.

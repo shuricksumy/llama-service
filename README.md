@@ -288,8 +288,6 @@ For that to work, `llama.env` sets:
 - `LLAMA_CACHE_RAM` — RAM (MB) reserved for prompt-cache storage.
 - `LLAMA_SLOT_SAVE_PATH` — enables `/slots` save/restore/erase so a slot's
   cache can survive a server restart. Empty = disabled.
-- `LLAMA_DEFRAG_THOLD` — KV-cache defrag threshold; matters more the longer
-  several slots stay warm concurrently.
 
 ### Verifying cache reuse is actually working
 
